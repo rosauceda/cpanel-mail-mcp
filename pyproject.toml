@@ -1,7 +1,7 @@
 [project]
 name = "cpanel-mail-mcp"
-version = "0.3.0"
-description = "MCP server for IMAP/SMTP email — multi-account, attachments, ICS calendar invites, drafts, Save-to-Sent. Runs as stdio or Streamable HTTP with bearer auth."
+version = "0.4.0"
+description = "MCP server for IMAP/SMTP email — multi-user server mode, multi-account, attachments, ICS invites, drafts, Save-to-Sent. Runs as stdio or Streamable HTTP."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"

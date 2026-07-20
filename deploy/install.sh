@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────
-# Install cpanel-mail-mcp as a persistent HTTP MCP server.
+# Install cpanel-mail-mcp as a multi-user HTTP MCP server.
 # Target: Debian 12 / Ubuntu 22.04+ LXC or VM. Run as root.
 #
+#   apt install -y curl        # if curl isn't in your base image
 #   curl -fsSL https://raw.githubusercontent.com/rosauceda/cpanel-mail-mcp/main/deploy/install.sh | bash
 #
 # What it does:
-#   • installs pipx + cpanel-mail-mcp from PyPI
+#   • installs pipx + git + cpanel-mail-mcp from PyPI
 #   • creates a dedicated system user (cpanelmcp)
-#   • drops an /etc/cpanel-mail-mcp/accounts.json.example
-#   • generates a random bearer token in /etc/cpanel-mail-mcp/token
-#   • installs a systemd unit listening on 127.0.0.1:8080
+#   • creates an empty /etc/cpanel-mail-mcp/users.json
+#   • installs a systemd unit listening on 127.0.0.1:8080 in multi-user mode
 #
 # What you still do:
-#   • edit /etc/cpanel-mail-mcp/accounts.json with real credentials
-#   • run:  systemctl enable --now cpanel-mail-mcp
-#   • point cloudflared (or nginx) at http://127.0.0.1:8080
+#   • add each user:  cpanel-mail-mcp admin add-user --email … --host …
+#     (each user gets their own bearer token; only they can act on their mailbox)
+#   • start service:  systemctl enable --now cpanel-mail-mcp
+#   • put cloudflared (or nginx/caddy) in front for HTTPS
 # ─────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -33,7 +34,7 @@ fi
 echo "==> apt update + deps"
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -q
-apt-get install -y --no-install-recommends python3 python3-venv pipx ca-certificates >/dev/null
+apt-get install -y --no-install-recommends python3 python3-venv pipx git ca-certificates >/dev/null
 
 echo "==> system user ($USER_NAME)"
 if ! id "$USER_NAME" &>/dev/null; then
@@ -50,52 +51,29 @@ runuser -u "$USER_NAME" -- env HOME="$STATE_DIR" PATH="$STATE_DIR/.local/bin:/us
 BIN="$STATE_DIR/.local/bin/cpanel-mail-mcp"
 [[ -x "$BIN" ]] || { echo "no encontré el binario en $BIN" >&2; exit 1; }
 
-echo "==> config: accounts.json template"
-if [[ ! -f "$CONFIG_DIR/accounts.json" ]]; then
-  cat > "$CONFIG_DIR/accounts.json" <<'JSON'
-[
-  {
-    "name": "default",
-    "user": "you@example.com",
-    "password": "REPLACE_ME",
-    "smtp_host": "mail.example.com",
-    "smtp_port": 465,
-    "imap_host": "mail.example.com",
-    "imap_port": 993,
-    "sent_folder": "INBOX.Sent",
-    "drafts_folder": "INBOX.Drafts",
-    "save_to_sent": true
-  }
-]
-JSON
-  chown "$USER_NAME:$USER_NAME" "$CONFIG_DIR/accounts.json"
-  chmod 600 "$CONFIG_DIR/accounts.json"
-  ACCOUNTS_NEW=1
+echo "==> users.json (empty — you fill it with the admin CLI)"
+USERS_FILE="$CONFIG_DIR/users.json"
+if [[ ! -f "$USERS_FILE" ]]; then
+  echo "[]" > "$USERS_FILE"
+  chown "$USER_NAME:$USER_NAME" "$USERS_FILE"
+  chmod 600 "$USERS_FILE"
 fi
 
-echo "==> bearer token"
-TOKEN_FILE="$CONFIG_DIR/token"
-if [[ ! -s "$TOKEN_FILE" ]]; then
-  TOK=$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')
-  echo "$TOK" > "$TOKEN_FILE"
-  chown "$USER_NAME:$USER_NAME" "$TOKEN_FILE"
-  chmod 600 "$TOKEN_FILE"
-  TOKEN_NEW=1
-fi
+# convenience symlink so operators can run `cpanel-mail-mcp admin …` from root
+ln -sf "$BIN" /usr/local/bin/cpanel-mail-mcp
 
-# EnvironmentFile keeps the token out of `systemctl show`
-if [[ ! -f "$CONFIG_DIR/env" ]]; then
-  {
-    echo "MCP_AUTH_TOKEN=$(cat "$TOKEN_FILE")"
-  } > "$CONFIG_DIR/env"
-  chown "$USER_NAME:$USER_NAME" "$CONFIG_DIR/env"
-  chmod 600 "$CONFIG_DIR/env"
+# expose EMAIL_USERS_FILE to root's shell so the admin CLI knows where to write
+if ! grep -q 'EMAIL_USERS_FILE' /etc/profile.d/cpanel-mail-mcp.sh 2>/dev/null; then
+  cat > /etc/profile.d/cpanel-mail-mcp.sh <<PROFILE
+# Point the admin CLI at the deploy's users.json
+export EMAIL_USERS_FILE=$USERS_FILE
+PROFILE
 fi
 
 echo "==> systemd unit"
 cat > /etc/systemd/system/cpanel-mail-mcp.service <<UNIT
 [Unit]
-Description=cpanel-mail-mcp — HTTP MCP server for IMAP/SMTP mailboxes
+Description=cpanel-mail-mcp — HTTP MCP server for IMAP/SMTP mailboxes (multi-user)
 After=network-online.target
 Wants=network-online.target
 
@@ -106,8 +84,7 @@ Group=$USER_NAME
 Environment=MCP_TRANSPORT=streamable-http
 Environment=MCP_HOST=$BIND_HOST
 Environment=MCP_PORT=$BIND_PORT
-Environment=EMAIL_ACCOUNTS_FILE=$CONFIG_DIR/accounts.json
-EnvironmentFile=$CONFIG_DIR/env
+Environment=EMAIL_USERS_FILE=$USERS_FILE
 ExecStart=$BIN
 Restart=on-failure
 RestartSec=3
@@ -117,7 +94,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$STATE_DIR
+ReadWritePaths=$STATE_DIR $CONFIG_DIR
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
@@ -133,15 +110,23 @@ systemctl daemon-reload
 
 echo
 echo "══════════════════════════════════════════════════════════════"
-echo " cpanel-mail-mcp instalado."
+echo " cpanel-mail-mcp instalado (multi-user)."
 echo "══════════════════════════════════════════════════════════════"
 echo
-echo " Siguiente:"
-echo "  1) Edita:   $CONFIG_DIR/accounts.json   (pon tu(s) cuenta(s) reales)"
-echo "  2) Arranca: systemctl enable --now cpanel-mail-mcp"
-echo "  3) Status:  systemctl status cpanel-mail-mcp"
-echo "  4) Logs:    journalctl -u cpanel-mail-mcp -f"
-echo "  5) Salud:   curl -sf http://$BIND_HOST:$BIND_PORT/health   # -> ok"
+echo " 1) Da de alta usuarios (uno por persona):"
+echo
+echo "     source /etc/profile.d/cpanel-mail-mcp.sh   # o cierra y abre la sesión SSH"
+echo "     cpanel-mail-mcp admin add-user \\"
+echo "       --email juan@dominio.com \\"
+echo "       --host mail.dominio.com"
+echo
+echo "    Cada 'add-user' imprime el bearer token del usuario. Anótalo y compártelo"
+echo "    con esa persona por un canal seguro (Signal, 1Password Send, etc.)."
+echo
+echo " 2) Arranca el servicio:  systemctl enable --now cpanel-mail-mcp"
+echo " 3) Status:              systemctl status cpanel-mail-mcp"
+echo " 4) Logs:                journalctl -u cpanel-mail-mcp -f"
+echo " 5) Salud:               curl -sf http://$BIND_HOST:$BIND_PORT/health   # -> ok"
 echo
 echo " Cloudflared: apunta tu hostname a  http://$BIND_HOST:$BIND_PORT"
 echo " Ejemplo ingress (~/.cloudflared/config.yml):"
@@ -150,13 +135,14 @@ echo "     - hostname: mcp.tudominio.com"
 echo "       service:  http://$BIND_HOST:$BIND_PORT"
 echo "     - service:  http_status:404"
 echo
-echo " Bearer token para el cliente MCP:"
-echo "   cat $TOKEN_FILE"
-echo
-echo " Registro en Claude Code (desde tu Mac):"
-echo "   TOKEN=\$(ssh root@LXC cat $TOKEN_FILE)"
+echo " Cada usuario, en su Claude Code:"
 echo "   claude mcp add --transport http --scope user cpanel-mail \\"
-echo "     --header \"Authorization: Bearer \$TOKEN\" \\"
+echo "     --header \"Authorization: Bearer <SU_TOKEN>\" \\"
 echo "     https://mcp.tudominio.com/mcp"
+echo
+echo " Admin CLI extra:"
+echo "   cpanel-mail-mcp admin list-users"
+echo "   cpanel-mail-mcp admin rotate-token --email juan@dominio.com"
+echo "   cpanel-mail-mcp admin remove-user  --email juan@dominio.com"
 echo
 echo "══════════════════════════════════════════════════════════════"

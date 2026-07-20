@@ -6,6 +6,7 @@ calls `action='help'` to discover what each action wants.
 """
 from __future__ import annotations
 
+import contextvars
 import hmac
 import inspect
 import logging
@@ -16,10 +17,15 @@ from typing import Any, Callable
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from . import imap_ops, smtp_ops
+from . import imap_ops, smtp_ops, users as users_mod
 from .accounts import Account, get_account, load_accounts
 
 log = logging.getLogger("cpanel_mail_mcp")
+
+# Set by the auth middleware in multi-user mode; unset in single-tenant mode.
+_current_account_var: contextvars.ContextVar[Account | None] = contextvars.ContextVar(
+    "cpanel_mail_current_account", default=None
+)
 
 
 def _load_env() -> None:
@@ -43,6 +49,22 @@ def _accounts() -> dict[str, Account]:
     if _accounts_cache is None:
         _accounts_cache = load_accounts()
     return _accounts_cache
+
+
+def _pick_account(account_param: str | None) -> Account:
+    """Return the account this request should use.
+
+    Multi-user mode: the auth middleware set a ContextVar from the bearer
+    token; that account wins and any `account` param is ignored (prevents
+    one user from acting on another's mailbox).
+
+    Single-tenant mode: fall back to the `account` param, or the first
+    configured account.
+    """
+    forced = _current_account_var.get()
+    if forced is not None:
+        return forced
+    return get_account(_accounts(), account_param)
 
 
 def _check_send_gate(confirm: str | None) -> None:
@@ -77,8 +99,11 @@ def _act_help(**_: Any) -> dict:
     }
 
 
-@_action("list_accounts", "List configured accounts (names + hosts, no secrets).")
+@_action("list_accounts", "List account(s) available to this caller (names + hosts, no secrets).")
 def _act_list_accounts(**_: Any) -> dict:
+    # In multi-user mode the caller only ever sees their own account.
+    forced = _current_account_var.get()
+    accts = [forced] if forced is not None else list(_accounts().values())
     return {
         "accounts": [
             {
@@ -89,14 +114,14 @@ def _act_list_accounts(**_: Any) -> dict:
                 "sent_folder": a.sent_folder,
                 "drafts_folder": a.drafts_folder,
             }
-            for a in _accounts().values()
+            for a in accts
         ]
     }
 
 
 @_action("list_folders", "List IMAP folders. Params: account?")
 def _act_list_folders(account: str | None = None, **_: Any) -> dict:
-    a = get_account(_accounts(), account)
+    a = _pick_account(account)
     return {"account": a.name, "folders": imap_ops.list_folders(a)}
 
 
@@ -107,7 +132,7 @@ def _act_list_folders(account: str | None = None, **_: Any) -> dict:
 def _act_list_recent(
     folder: str = "INBOX", limit: int = 20, account: str | None = None, **_: Any
 ) -> dict:
-    a = get_account(_accounts(), account)
+    a = _pick_account(account)
     return {
         "account": a.name,
         "folder": folder,
@@ -127,7 +152,7 @@ def _act_search(
     account: str | None = None,
     **_: Any,
 ) -> dict:
-    a = get_account(_accounts(), account)
+    a = _pick_account(account)
     return {
         "account": a.name,
         "results": imap_ops.search(a, query, field, folder, limit),
@@ -145,7 +170,7 @@ def _act_read(
     account: str | None = None,
     **_: Any,
 ) -> dict:
-    a = get_account(_accounts(), account)
+    a = _pick_account(account)
     return imap_ops.read_email(a, uid, folder, include_attachments)
 
 
@@ -160,7 +185,7 @@ def _act_download(
     account: str | None = None,
     **_: Any,
 ) -> dict:
-    a = get_account(_accounts(), account)
+    a = _pick_account(account)
     return {
         "account": a.name,
         "attachments": imap_ops.download_attachments(a, uid, folder, filenames),
@@ -190,7 +215,7 @@ def _act_send(
     **_: Any,
 ) -> dict:
     _check_send_gate(confirm)
-    a = get_account(_accounts(), account)
+    a = _pick_account(account)
     result = smtp_ops.send(a, to, subject, text, html, cc, bcc, reply_to, attachments)
     raw = result.pop("raw")
     save = a.save_to_sent if save_to_sent is None else save_to_sent
@@ -222,7 +247,7 @@ def _act_save_draft(
     account: str | None = None,
     **_: Any,
 ) -> dict:
-    a = get_account(_accounts(), account)
+    a = _pick_account(account)
     msg = smtp_ops.build_message(a, to, subject, text, html, cc, bcc, None, attachments)
     box = folder or a.drafts_folder
     result = imap_ops.append_message(a, box, msg.as_bytes(), "\\Draft \\Seen")
@@ -256,7 +281,7 @@ def _act_send_invite(
     **_: Any,
 ) -> dict:
     _check_send_gate(confirm)
-    a = get_account(_accounts(), account)
+    a = _pick_account(account)
     result = smtp_ops.send_invite(
         a, to, subject, start, end, description, location, organizer, attendees,
         cc, bcc, text, html,
@@ -308,13 +333,43 @@ def email(action: str = "help", params: dict | None = None) -> dict:
         return {"error": str(e), "action": action, "type": type(e).__name__}
 
 
-class BearerAuthASGI:
-    """ASGI middleware that requires `Authorization: Bearer <token>` on every
-    HTTP request except `/health`. Uses constant-time comparison."""
+async def _send_401(send) -> None:
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 401,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"www-authenticate", b'Bearer realm="mcp"'),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": b'{"error":"unauthorized"}'})
 
-    def __init__(self, app, token: str) -> None:
+
+class BearerAuthASGI:
+    """ASGI middleware that authenticates every HTTP request via
+    `Authorization: Bearer <token>` (except `/health`, which is open).
+
+    Two modes:
+      - single-tenant: pass `single_token=<str>`. All requests must match it
+        (constant-time compare).
+      - multi-user:    pass `users={token: Account, ...}`. The middleware
+        looks up the caller's account and binds it in a ContextVar so tool
+        handlers act on that account instead of any `params.account`.
+    """
+
+    def __init__(
+        self,
+        app,
+        single_token: str | None = None,
+        users: dict[str, Account] | None = None,
+    ) -> None:
+        if bool(single_token) == bool(users):
+            raise ValueError("BearerAuthASGI: pick exactly one of single_token or users")
         self.app = app
-        self._expected = f"Bearer {token}".encode()
+        self._expected = f"Bearer {single_token}".encode() if single_token else None
+        self._users = users or {}
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -336,18 +391,26 @@ class BearerAuthASGI:
             if k == b"authorization":
                 auth = v
                 break
-        if not hmac.compare_digest(auth, self._expected):
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 401,
-                    "headers": [
-                        (b"content-type", b"application/json"),
-                        (b"www-authenticate", b'Bearer realm="mcp"'),
-                    ],
-                }
-            )
-            await send({"type": "http.response.body", "body": b'{"error":"unauthorized"}'})
+        # multi-user
+        if self._users:
+            if not auth.startswith(b"Bearer "):
+                await _send_401(send)
+                return
+            token = auth[7:].decode("ascii", errors="replace").strip()
+            acct = self._users.get(token)
+            if acct is None:
+                await _send_401(send)
+                return
+            log.debug("auth ok: %s", acct.user)
+            reset = _current_account_var.set(acct)
+            try:
+                await self.app(scope, receive, send)
+            finally:
+                _current_account_var.reset(reset)
+            return
+        # single-tenant
+        if not hmac.compare_digest(auth, self._expected):  # type: ignore[arg-type]
+            await _send_401(send)
             return
         await self.app(scope, receive, send)
 
@@ -363,8 +426,9 @@ def serve() -> None:
       MCP_TRANSPORT       stdio | http | streamable-http | sse   (default stdio)
       MCP_HOST            bind host                              (default 127.0.0.1)
       MCP_PORT            bind port                              (default 8080)
-      MCP_AUTH_TOKEN      bearer token — REQUIRED in http mode
-      MCP_ALLOW_NO_AUTH   set truthy to skip token check (dev only)
+      EMAIL_USERS_FILE    users.json path → multi-user mode (token → account)
+      MCP_AUTH_TOKEN      single-tenant bearer token (ignored if EMAIL_USERS_FILE exists)
+      MCP_ALLOW_NO_AUTH   skip token check (dev only)
     """
     logging.basicConfig(
         level=os.environ.get("MCP_LOG_LEVEL", "INFO").upper(),
@@ -381,21 +445,37 @@ def serve() -> None:
 
     host = os.environ.get("MCP_HOST", "127.0.0.1")
     port = int(os.environ.get("MCP_PORT", "8080"))
-    token = os.environ.get("MCP_AUTH_TOKEN", "").strip()
     allow_no_auth = _bool_env("MCP_ALLOW_NO_AUTH")
 
-    if not token and not allow_no_auth:
-        raise SystemExit(
-            "MCP HTTP mode requires MCP_AUTH_TOKEN. "
-            "Set it to a random secret, or set MCP_ALLOW_NO_AUTH=1 to run without auth (not recommended)."
-        )
+    multi_user = users_mod.is_multi_user()
+    users_map: dict[str, Account] = {}
+    single_token = ""
+    if multi_user:
+        users_map = users_mod.load_users()
+        if not users_map and not allow_no_auth:
+            raise SystemExit(
+                f"EMAIL_USERS_FILE={users_mod.users_path()} exists but is empty. "
+                "Add a user with:  cpanel-mail-mcp admin add-user --email … --host …"
+            )
+    else:
+        single_token = os.environ.get("MCP_AUTH_TOKEN", "").strip()
+        if not single_token and not allow_no_auth:
+            raise SystemExit(
+                "HTTP mode needs auth. Either:\n"
+                "  • set EMAIL_USERS_FILE to a users.json (multi-user mode), or\n"
+                "  • set MCP_AUTH_TOKEN to a random secret (single-tenant), or\n"
+                "  • set MCP_ALLOW_NO_AUTH=1 to run without auth (dev only)."
+            )
 
     import uvicorn
 
     app = mcp.sse_app() if transport == "sse" else mcp.streamable_http_app()
-    if token:
-        app = BearerAuthASGI(app, token)
-        log.info("bearer auth ENABLED")
+    if multi_user and users_map:
+        app = BearerAuthASGI(app, users=users_map)
+        log.info("multi-user mode: %d user(s) loaded from %s", len(users_map), users_mod.users_path())
+    elif single_token:
+        app = BearerAuthASGI(app, single_token=single_token)
+        log.info("single-tenant mode: bearer auth ENABLED")
     else:
         log.warning("bearer auth DISABLED via MCP_ALLOW_NO_AUTH — do not expose this port publicly")
 
@@ -404,6 +484,12 @@ def serve() -> None:
 
 
 def main() -> None:
+    import sys
+
+    if len(sys.argv) > 1 and sys.argv[1] == "admin":
+        from .admin import main as admin_main
+
+        sys.exit(admin_main(sys.argv[2:]))
     serve()
 
 

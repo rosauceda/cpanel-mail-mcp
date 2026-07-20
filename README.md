@@ -6,6 +6,7 @@ plain IMAP + SMTP.
 
 ## Features
 
+* **Multi-user server mode** — one instance, many users, each with their own bearer token and mailbox (per-request isolation)
 * **Multi-account** — manage multiple email accounts from different providers
 * **Read, search, list** — full IMAP support with folder browsing
 * **Send emails** — plain text, HTML, or both (multipart/alternative)
@@ -212,35 +213,50 @@ configured account:
 ## Run as an HTTP server (LXC / VPS / homelab)
 
 By default `cpanel-mail-mcp` runs over **stdio** — your MCP client
-launches it per session. To run it 24/7 as a shared HTTPS endpoint (e.g.
-behind Cloudflare Tunnel), set:
+launches it per session. To run it 24/7 as a shared HTTPS endpoint,
+you have two shapes:
+
+### Multi-user (recommended for a team)
+
+One instance, many users. Each person has their own bearer token, and the
+server enforces that they can only touch their own mailbox. Setup:
+
+```bash
+# on the server (Debian/Ubuntu LXC as root)
+apt install -y curl      # if not present
+curl -fsSL https://raw.githubusercontent.com/rosauceda/cpanel-mail-mcp/main/deploy/install.sh | bash
+
+# after logging out and back in (so $EMAIL_USERS_FILE is exported):
+cpanel-mail-mcp admin add-user --email juan@dominio.com --host mail.dominio.com
+# prompts for password → prints juan's bearer token → hand it to juan
+
+systemctl enable --now cpanel-mail-mcp
+```
+
+Each user, in their Claude Code:
+```bash
+claude mcp add --transport http --scope user cpanel-mail \
+  --header "Authorization: Bearer <THEIR_TOKEN>" \
+  https://mcp.yourdomain.com/mcp
+```
+
+Full docs, admin CLI, migration, Cloudflare Tunnel example, hardened
+systemd unit → [`deploy/`](deploy/).
+
+### Single-tenant (only you)
 
 ```bash
 export MCP_TRANSPORT=streamable-http
 export MCP_HOST=127.0.0.1
 export MCP_PORT=8080
 export MCP_AUTH_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(36))')"
+export EMAIL_ACCOUNTS_JSON='[{...one account...}]'   # or EMAIL_ACCOUNTS_FILE
 cpanel-mail-mcp
 ```
 
 Endpoints:
 * `POST /mcp` — MCP Streamable HTTP transport (requires bearer token)
 * `GET  /health` — plain `ok` for reverse-proxy probes
-
-Registered on the client side with:
-
-```bash
-claude mcp add --transport http cpanel-mail \
-  --header "Authorization: Bearer $MCP_AUTH_TOKEN" \
-  https://mcp.yourdomain.com/mcp
-```
-
-For a one-command install on an LXC — dedicated user, systemd unit,
-generated token, hardened service — see [`deploy/`](deploy/):
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/rosauceda/cpanel-mail-mcp/main/deploy/install.sh | bash
-```
 
 ## Send gate (recommended when an agent has this tool)
 

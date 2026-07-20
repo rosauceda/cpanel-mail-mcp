@@ -1,16 +1,19 @@
 # Reference copy of the unit that install.sh drops in
 # /etc/systemd/system/cpanel-mail-mcp.service.
 #
+# Multi-user mode: EMAIL_USERS_FILE points at /etc/cpanel-mail-mcp/users.json;
+# each request's `Authorization: Bearer <token>` picks that user's account.
+#
 # Assumes:
 #   - user  cpanelmcp exists with home /var/lib/cpanelmcp
 #   - binary at /var/lib/cpanelmcp/.local/bin/cpanel-mail-mcp (pipx)
-#   - config in /etc/cpanel-mail-mcp/{accounts.json,env}
+#   - users.json (mode 0600, owner cpanelmcp) in /etc/cpanel-mail-mcp/
 #
-# Edit the Environment= lines if you changed the defaults, then:
+# After editing:
 #   systemctl daemon-reload && systemctl restart cpanel-mail-mcp
 
 [Unit]
-Description=cpanel-mail-mcp — HTTP MCP server for IMAP/SMTP mailboxes
+Description=cpanel-mail-mcp — HTTP MCP server for IMAP/SMTP mailboxes (multi-user)
 After=network-online.target
 Wants=network-online.target
 
@@ -21,8 +24,7 @@ Group=cpanelmcp
 Environment=MCP_TRANSPORT=streamable-http
 Environment=MCP_HOST=127.0.0.1
 Environment=MCP_PORT=8080
-Environment=EMAIL_ACCOUNTS_FILE=/etc/cpanel-mail-mcp/accounts.json
-EnvironmentFile=/etc/cpanel-mail-mcp/env
+Environment=EMAIL_USERS_FILE=/etc/cpanel-mail-mcp/users.json
 ExecStart=/var/lib/cpanelmcp/.local/bin/cpanel-mail-mcp
 Restart=on-failure
 RestartSec=3
@@ -32,7 +34,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/cpanelmcp
+ReadWritePaths=/var/lib/cpanelmcp /etc/cpanel-mail-mcp
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
