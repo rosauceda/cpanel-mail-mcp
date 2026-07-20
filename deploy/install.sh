@@ -88,6 +88,13 @@ Environment=EMAIL_USERS_FILE=$USERS_FILE
 # Behind a reverse proxy (Cloudflare Tunnel, nginx, caddy)? Add your public
 # hostname(s) here or requests come back as 421 Misdirected Request.
 # Environment=MCP_ALLOWED_HOSTS=mcp.yourdomain.com
+
+# ── Cloudflare Access OIDC (optional; enables OAuth 2.1 for Claude Custom
+#    Connector). Set these once you've created a SaaS OIDC app in CF Access.
+# Environment=CF_ACCESS_TEAM_DOMAIN=<team>.cloudflareaccess.com
+# Environment=CF_ACCESS_AUD=<application-audience-tag>
+# Environment=MCP_RESOURCE_URL=https://mcp.yourdomain.com
+# Environment=MCP_OAUTH_AUTHORIZATION_SERVERS=https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<app_uid>
 ExecStart=$BIN
 Restart=on-failure
 RestartSec=3

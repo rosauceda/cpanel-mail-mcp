@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import imap_ops, smtp_ops, users as users_mod
+from . import cf_access, imap_ops, smtp_ops, users as users_mod
 from .accounts import Account, get_account, load_accounts
 
 
@@ -360,43 +360,155 @@ def email(action: str = "help", params: dict | None = None) -> dict:
         return {"error": str(e), "action": action, "type": type(e).__name__}
 
 
-async def _send_401(send) -> None:
-    await send(
-        {
-            "type": "http.response.start",
-            "status": 401,
-            "headers": [
-                (b"content-type", b"application/json"),
-                (b"www-authenticate", b'Bearer realm="mcp"'),
-            ],
-        }
-    )
-    await send({"type": "http.response.body", "body": b'{"error":"unauthorized"}'})
+async def _send_json(send, status: int, payload: bytes, extra_headers: list | None = None) -> None:
+    headers = [(b"content-type", b"application/json")]
+    if extra_headers:
+        headers.extend(extra_headers)
+    await send({"type": "http.response.start", "status": status, "headers": headers})
+    await send({"type": "http.response.body", "body": payload})
 
 
-class BearerAuthASGI:
-    """ASGI middleware that authenticates every HTTP request via
-    `Authorization: Bearer <token>` (except `/health`, which is open).
+async def _send_401(send, detail: str = "unauthorized") -> None:
+    body = f'{{"error":"{detail}"}}'.encode()
+    await _send_json(send, 401, body, [(b"www-authenticate", b'Bearer realm="mcp"')])
 
-    Two modes:
-      - single-tenant: pass `single_token=<str>`. All requests must match it
-        (constant-time compare).
-      - multi-user:    pass `users={token: Account, ...}`. The middleware
-        looks up the caller's account and binds it in a ContextVar so tool
-        handlers act on that account instead of any `params.account`.
+
+async def _send_403(send, detail: str) -> None:
+    body = f'{{"error":"{detail}"}}'.encode()
+    await _send_json(send, 403, body)
+
+
+def _user_by_email(users: dict[str, Account], email: str) -> Account | None:
+    for acct in users.values():
+        if acct.user.lower() == email.lower():
+            return acct
+    return None
+
+
+class UnifiedAuthASGI:
+    """ASGI middleware that authenticates every HTTP request. Order:
+
+    1. `/health`, `/healthz`, `/.well-known/*`  → passthrough (no auth)
+    2. `Cf-Access-Jwt-Assertion` header         → verify with CF Access JWKS
+       or `Authorization: Bearer <jwt>` where the token looks like a JWT
+       and CF Access is configured. Email claim → account.
+    3. `Authorization: Bearer <opaque-token>`   → users.json lookup (legacy
+       bearer path — still works so CLI installs keep functioning during
+       migration to CF Access OIDC).
+    4. otherwise                                → 401
+
+    Single-tenant mode (no users_map): CF Access disabled, single_token wins.
     """
 
     def __init__(
         self,
         app,
-        single_token: str | None = None,
+        *,
         users: dict[str, Account] | None = None,
+        single_token: str | None = None,
+        cf_verifier: cf_access.CFAccessVerifier | None = None,
     ) -> None:
         if bool(single_token) == bool(users):
-            raise ValueError("BearerAuthASGI: pick exactly one of single_token or users")
+            raise ValueError("UnifiedAuthASGI: pick exactly one of single_token or users")
         self.app = app
-        self._expected = f"Bearer {single_token}".encode() if single_token else None
         self._users = users or {}
+        self._expected = f"Bearer {single_token}".encode() if single_token else None
+        self._cf = cf_verifier
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if path in ("/health", "/healthz") or path.startswith("/.well-known/"):
+            await self.app(scope, receive, send)
+            return
+
+        cf_jwt_header = b""
+        auth = b""
+        for k, v in scope.get("headers", []):
+            if k == b"cf-access-jwt-assertion":
+                cf_jwt_header = v
+            elif k == b"authorization":
+                auth = v
+
+        # Path 2a: explicit CF JWT header (browser SSO flow)
+        if self._cf and cf_jwt_header:
+            try:
+                claims = self._cf.verify(cf_jwt_header.decode(errors="replace").strip())
+            except cf_access.CFAccessInvalid as e:
+                log.info("CF JWT invalid: %s", e)
+                await _send_401(send, "cf-access-jwt-invalid")
+                return
+            return await self._dispatch_with_claims(scope, receive, send, claims)
+
+        # Path 2b: Bearer that looks like a JWT (SaaS OIDC flow → Claude client)
+        if self._cf and auth.startswith(b"Bearer "):
+            token = auth[7:].decode("ascii", errors="replace").strip()
+            if token.count(".") == 2:  # heuristic: JWT header.payload.signature
+                try:
+                    claims = self._cf.verify(token)
+                    return await self._dispatch_with_claims(scope, receive, send, claims)
+                except cf_access.CFAccessInvalid:
+                    pass  # fall through to opaque-token path
+
+        # Path 3: multi-user opaque bearer (legacy — still supported)
+        if self._users and auth.startswith(b"Bearer "):
+            token = auth[7:].decode("ascii", errors="replace").strip()
+            acct = self._users.get(token)
+            if acct is not None:
+                return await self._dispatch_with_account(scope, receive, send, acct)
+
+        # Path: single-tenant
+        if self._expected is not None and hmac.compare_digest(auth, self._expected):
+            await self.app(scope, receive, send)
+            return
+
+        await _send_401(send)
+
+    async def _dispatch_with_claims(self, scope, receive, send, claims: dict) -> None:
+        email = cf_access.extract_email(claims)
+        if not email:
+            log.info("CF JWT has no email claim; claims=%s", list(claims.keys()))
+            await _send_403(send, "cf-access-jwt-no-email")
+            return
+        acct = _user_by_email(self._users, email) if self._users else None
+        if acct is None:
+            log.info("CF JWT email %r not in users.json", email)
+            await _send_403(send, f"unknown-user:{email}")
+            return
+        await self._dispatch_with_account(scope, receive, send, acct)
+
+    async def _dispatch_with_account(self, scope, receive, send, acct: Account) -> None:
+        log.debug("auth ok: %s", acct.user)
+        reset = _current_account_var.set(acct)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _current_account_var.reset(reset)
+
+
+class WellKnownASGI:
+    """Serves `/.well-known/oauth-protected-resource` (RFC 9728) so MCP clients
+    can discover the authorization server that issues our tokens.
+
+    Wraps the downstream app: `/health`, `/healthz`, and `/.well-known/*` are
+    handled here; everything else is forwarded.
+    """
+
+    def __init__(self, app, *, resource_url: str, authorization_servers: list[str]) -> None:
+        self.app = app
+        self.resource_url = resource_url
+        self.authorization_servers = authorization_servers
+        body = {
+            "resource": resource_url,
+            "authorization_servers": authorization_servers,
+            "bearer_methods_supported": ["header"],
+            "resource_documentation": "https://github.com/rosauceda/cpanel-mail-mcp",
+        }
+        import json
+
+        self._prm_body = json.dumps(body).encode()
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -404,40 +516,10 @@ class BearerAuthASGI:
             return
         path = scope.get("path", "")
         if path in ("/health", "/healthz"):
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [(b"content-type", b"text/plain; charset=utf-8")],
-                }
-            )
-            await send({"type": "http.response.body", "body": b"ok"})
+            await _send_json(send, 200, b"ok", [(b"content-type", b"text/plain; charset=utf-8")])
             return
-        auth = b""
-        for k, v in scope.get("headers", []):
-            if k == b"authorization":
-                auth = v
-                break
-        # multi-user
-        if self._users:
-            if not auth.startswith(b"Bearer "):
-                await _send_401(send)
-                return
-            token = auth[7:].decode("ascii", errors="replace").strip()
-            acct = self._users.get(token)
-            if acct is None:
-                await _send_401(send)
-                return
-            log.debug("auth ok: %s", acct.user)
-            reset = _current_account_var.set(acct)
-            try:
-                await self.app(scope, receive, send)
-            finally:
-                _current_account_var.reset(reset)
-            return
-        # single-tenant
-        if not hmac.compare_digest(auth, self._expected):  # type: ignore[arg-type]
-            await _send_401(send)
+        if path == "/.well-known/oauth-protected-resource":
+            await _send_json(send, 200, self._prm_body)
             return
         await self.app(scope, receive, send)
 
@@ -496,15 +578,39 @@ def serve() -> None:
 
     import uvicorn
 
+    cf_verifier = cf_access.from_env()
+    if cf_verifier:
+        log.info(
+            "CF Access OIDC ENABLED: team=%s aud=%s… (JWKS %s)",
+            cf_verifier.team_domain,
+            cf_verifier.audience[:10],
+            cf_verifier.jwks_url,
+        )
+
     app = mcp.sse_app() if transport == "sse" else mcp.streamable_http_app()
     if multi_user and users_map:
-        app = BearerAuthASGI(app, users=users_map)
+        app = UnifiedAuthASGI(app, users=users_map, cf_verifier=cf_verifier)
         log.info("multi-user mode: %d user(s) loaded from %s", len(users_map), users_mod.users_path())
     elif single_token:
-        app = BearerAuthASGI(app, single_token=single_token)
+        app = UnifiedAuthASGI(app, single_token=single_token, cf_verifier=cf_verifier)
         log.info("single-tenant mode: bearer auth ENABLED")
     else:
         log.warning("bearer auth DISABLED via MCP_ALLOW_NO_AUTH — do not expose this port publicly")
+
+    # Wrap with the well-known layer so /health and /.well-known/* bypass auth.
+    resource_url = os.environ.get("MCP_RESOURCE_URL", "").strip()
+    as_urls = [u.strip() for u in os.environ.get("MCP_OAUTH_AUTHORIZATION_SERVERS", "").split(",") if u.strip()]
+    if resource_url:
+        app = WellKnownASGI(app, resource_url=resource_url, authorization_servers=as_urls)
+        log.info(
+            "OAuth protected-resource metadata at %s/.well-known/oauth-protected-resource "
+            "(authorization_servers=%s)",
+            resource_url,
+            as_urls or "[]",
+        )
+    else:
+        # still expose /health without a resource_url configured
+        app = WellKnownASGI(app, resource_url="", authorization_servers=[])
 
     log.info("cpanel-mail-mcp listening on http://%s:%s (transport=%s)", host, port, transport)
     uvicorn.run(app, host=host, port=port, log_level="info")

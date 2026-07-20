@@ -127,6 +127,10 @@ claude mcp list | grep cpanel     # should show ✔ Connected
 | `MCP_ALLOWED_HOSTS`            | —              | comma-list of Host headers to accept (**required behind a reverse proxy** — e.g. `mcp.yourdomain.com`) |
 | `MCP_ALLOWED_ORIGINS`          | —              | comma-list of Origin headers to accept (browser clients only) |
 | `MCP_DISABLE_DNS_REBINDING_PROTECTION` | —      | set truthy to bypass Host/Origin checks entirely |
+| `CF_ACCESS_TEAM_DOMAIN`        | —              | e.g. `yourteam.cloudflareaccess.com` — enables CF Access OIDC path |
+| `CF_ACCESS_AUD`                | —              | Application Audience tag from the CF Access app |
+| `MCP_RESOURCE_URL`             | —              | e.g. `https://mcp.yourdomain.com` — public URL of this MCP server (used in `oauth-protected-resource` metadata) |
+| `MCP_OAUTH_AUTHORIZATION_SERVERS` | —           | comma-list of AS URLs advertised in metadata (usually your CF Access OIDC app URL) |
 | `MCP_LOG_LEVEL`                | `INFO`         | stdlib logging level                           |
 | `EMAIL_ACCOUNTS_FILE`          | —              | single-tenant accounts JSON                    |
 | `EMAIL_ACCOUNTS_JSON`          | —              | single-tenant inline JSON                      |
@@ -176,6 +180,84 @@ systemctl daemon-reload
 userdel -r cpanelmcp
 rm -rf /etc/cpanel-mail-mcp
 ```
+
+## Cloudflare Access OIDC (optional but recommended for team use)
+
+Turns Cloudflare Access into the OAuth 2.1 authorization server. Users log
+in with Google/GitHub/email OTP; the MCP server just verifies the JWT that
+CF Access mints and maps `email` → account in `users.json`. This is what
+lets you register the server as a Custom Connector on claude.ai (which
+requires OAuth, not bearer tokens).
+
+### 1. Configure the Cloudflare Access application
+
+In `one.dash.cloudflare.com` → **Access** → **Applications** → **Add** → **SaaS** → **OIDC**:
+
+* Application name: `cpanel-mail-mcp`
+* Redirect URLs (both):
+  - `https://claude.ai/api/mcp/auth_callback`
+  - `http://127.0.0.1:35333/callback`   (Claude Code CLI default callback)
+* Scopes: `openid`, `email`, `profile`
+* Policy: `Include` → `Emails` (your team) or `Emails ending in @yourdomain.com`
+* Login methods: Google, GitHub, or one-time email PIN
+
+After saving, note:
+- **Client ID** and **Client Secret** (used by MCP clients)
+- **AUD (Application Audience tag)** — long hex string, from the app's Overview page
+- **Team domain** — `<team>.cloudflareaccess.com`, top-left of Zero Trust dashboard
+- **Endpoints** — CF shows `/authorization`, `/token`, `/certs` URLs. You can compose them or fetch the full metadata at `https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<app_uid>/.well-known/openid-configuration`
+
+### 2. Update the server systemd unit
+
+Add these env vars to `/etc/systemd/system/cpanel-mail-mcp.service`:
+
+```
+Environment=CF_ACCESS_TEAM_DOMAIN=<team>.cloudflareaccess.com
+Environment=CF_ACCESS_AUD=<your-application-audience-tag>
+Environment=MCP_RESOURCE_URL=https://mcp.yourdomain.com
+Environment=MCP_OAUTH_AUTHORIZATION_SERVERS=https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<app_uid>
+```
+
+Reload and restart:
+
+```bash
+systemctl daemon-reload && systemctl restart cpanel-mail-mcp
+journalctl -u cpanel-mail-mcp -n 10 --no-pager | grep -i "CF Access"
+# esperado: "CF Access OIDC ENABLED: team=… aud=… (JWKS …)"
+```
+
+### 3. Verify metadata is public
+
+```bash
+curl -sf https://mcp.yourdomain.com/.well-known/oauth-protected-resource | python3 -m json.tool
+```
+
+Should return the resource + authorization_servers JSON.
+
+### 4. Register on the client side
+
+**Claude custom connector (web / mobile):** in claude.ai → Settings →
+Connectors → Add custom connector, put the MCP URL. Claude will discover the
+CF Access OIDC endpoints via the well-known metadata and drive the OAuth
+flow. On first use, the user is redirected to CF Access, logs in with SSO,
+and returns with an access token.
+
+**Claude Code CLI:**
+
+```bash
+claude mcp add --transport http --scope user cpanel-mail \
+  https://mcp.yourdomain.com/mcp \
+  --client-id <CF_CLIENT_ID> \
+  --client-secret            # prompts for the secret
+```
+
+First run opens a browser to CF Access for login; token cached locally.
+
+### 5. Backward compat during migration
+
+The existing bearer token flow **still works** in 0.5.0 — the middleware
+tries CF Access JWT first, then falls back to opaque bearer from
+`users.json`. You can migrate users one by one without downtime.
 
 ## Threat model / notes
 
