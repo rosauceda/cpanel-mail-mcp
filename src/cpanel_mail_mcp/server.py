@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-from . import cf_access, imap_ops, smtp_ops, users as users_mod
+from . import cf_access, imap_ops, oauth_proxy, smtp_ops, users as users_mod
 from .accounts import Account, get_account, load_accounts
 
 
@@ -512,20 +512,38 @@ class UnifiedAuthASGI:
 
 
 class WellKnownASGI:
-    """Serves `/.well-known/oauth-protected-resource` (RFC 9728) so MCP clients
-    can discover the authorization server that issues our tokens.
+    """Serves the OAuth discovery documents. Two modes:
 
-    Wraps the downstream app: `/health`, `/healthz`, and `/.well-known/*` are
-    handled here; everything else is forwarded.
+    * **Passthrough** (no proxy): expose `/.well-known/oauth-protected-resource`
+      only, pointing at an external AS (e.g. Cloudflare Access directly).
+
+    * **Proxy mode** (`OAuthProxy` passed in): also expose
+      `/.well-known/oauth-authorization-server` and
+      `/.well-known/openid-configuration` composing an OAuth 2.1 AS view
+      over the upstream OIDC provider (adds `registration_endpoint` so
+      MCP clients that require DCR can register). Also serves
+      `POST /register`.
+
+    Always serves `/health` and `/healthz` unauthenticated.
     """
 
-    def __init__(self, app, *, resource_url: str, authorization_servers: list[str]) -> None:
+    def __init__(
+        self,
+        app,
+        *,
+        resource_url: str,
+        authorization_servers: list[str],
+        proxy: oauth_proxy.OAuthProxy | None = None,
+    ) -> None:
         self.app = app
         self.resource_url = resource_url
-        self.authorization_servers = authorization_servers
+        self.proxy = proxy
+        # If a proxy is set, override the AS list to point at ourselves so the
+        # client discovers our composed metadata (which advertises DCR).
+        as_list = [resource_url] if proxy else authorization_servers
         body = {
             "resource": resource_url,
-            "authorization_servers": authorization_servers,
+            "authorization_servers": as_list,
             "bearer_methods_supported": ["header"],
             "resource_documentation": "https://github.com/rosauceda/cpanel-mail-mcp",
         }
@@ -538,18 +556,44 @@ class WellKnownASGI:
             await self.app(scope, receive, send)
             return
         path = scope.get("path", "")
+        method = scope.get("method", "GET")
+
         if path in ("/health", "/healthz"):
             await _send_json(send, 200, b"ok", [(b"content-type", b"text/plain; charset=utf-8")])
             return
-        # Both the root well-known URL and the path-suffixed variant
-        # (`/.well-known/oauth-protected-resource/mcp`, RFC 9728 §3.3 — the
-        # form recent MCP clients like Claude try first) return the same
-        # metadata JSON.
+
+        # protected-resource metadata (RFC 9728); both root and path-suffixed
         if path == "/.well-known/oauth-protected-resource" or path.startswith(
             "/.well-known/oauth-protected-resource/"
         ):
             await _send_json(send, 200, self._prm_body)
             return
+
+        if self.proxy is not None:
+            # AS metadata (RFC 8414) and OIDC discovery — same composed doc
+            if path in (
+                "/.well-known/oauth-authorization-server",
+                "/.well-known/openid-configuration",
+            ) or path.startswith("/.well-known/oauth-authorization-server/"):
+                try:
+                    body = self.proxy.composed_metadata()
+                except Exception as e:
+                    await _send_json(
+                        send, 502, f'{{"error":"upstream_unreachable","detail":"{e}"}}'.encode()
+                    )
+                    return
+                await _send_json(send, 200, body)
+                return
+
+            # RFC 7591 Dynamic Client Registration
+            if path == "/register" and method == "POST":
+                try:
+                    await self.proxy.handle_register(scope, receive, send)
+                except Exception as e:
+                    log.exception("DCR handler crashed: %s", e)
+                    await _send_json(send, 500, b'{"error":"dcr_failed"}')
+                return
+
         await self.app(scope, receive, send)
 
 
@@ -629,9 +673,21 @@ def serve() -> None:
     # Wrap with the well-known layer so /health and /.well-known/* bypass auth.
     resource_url = os.environ.get("MCP_RESOURCE_URL", "").strip().rstrip("/")
     as_urls = [u.strip() for u in os.environ.get("MCP_OAUTH_AUTHORIZATION_SERVERS", "").split(",") if u.strip()]
+    proxy = oauth_proxy.from_env(resource_url) if resource_url else None
+    if proxy is not None:
+        log.info(
+            "OAuth DCR proxy ENABLED: /register + /.well-known/oauth-authorization-server "
+            "advertising upstream=%s",
+            proxy.upstream_issuer,
+        )
     if resource_url:
         _set_www_authenticate(resource_url)
-        app = WellKnownASGI(app, resource_url=resource_url, authorization_servers=as_urls)
+        app = WellKnownASGI(
+            app,
+            resource_url=resource_url,
+            authorization_servers=as_urls,
+            proxy=proxy,
+        )
         log.info(
             "OAuth protected-resource metadata at %s/.well-known/oauth-protected-resource "
             "(authorization_servers=%s)",
