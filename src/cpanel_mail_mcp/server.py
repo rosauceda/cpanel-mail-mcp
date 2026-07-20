@@ -394,8 +394,16 @@ async def _send_403(send, detail: str) -> None:
 
 
 def _user_by_email(users: dict[str, Account], email: str) -> Account | None:
+    """Find the account for a JWT email claim.
+
+    Matches against `sso_emails` first (explicit list of external identities
+    that map to this account), then falls back to `user` (the IMAP login).
+    Handy when the SSO identity differs from the mailbox address —
+    e.g. logging in with `me@gmail.com` to access `me@company.com`.
+    """
+    needle = email.lower()
     for acct in users.values():
-        if acct.user.lower() == email.lower():
+        if needle in acct.sso_emails or acct.user.lower() == needle:
             return acct
     return None
 
