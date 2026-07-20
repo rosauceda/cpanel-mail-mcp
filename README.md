@@ -7,6 +7,7 @@ plain IMAP + SMTP.
 ## Features
 
 * **Multi-user server mode** — one instance, many users, each with their own bearer token and mailbox (per-request isolation)
+* **OAuth 2.1 via Cloudflare Access** — optional SSO (Google / GitHub / Email OTP) instead of shared bearer tokens; server exposes RFC 9728 protected-resource metadata, RFC 8414 AS metadata, and RFC 7591 DCR — proxied over CF Access SaaS OIDC
 * **Multi-account** — manage multiple email accounts from different providers
 * **Read, search, list** — full IMAP support with folder browsing
 * **Send emails** — plain text, HTML, or both (multipart/alternative)
@@ -94,6 +95,13 @@ Backwards compatible with 0.1.x installs. See [`.env.example`](.env.example).
 | `drafts_folder` | no       | `Drafts`  |
 | `save_to_sent`  | no       | `true`    |
 | `from_name`     | no       | —         |
+| `sso_emails`    | no       | `[]`      |
+
+`sso_emails` is a list of external identities (e.g. Google login addresses)
+that map to this account. Only used in OAuth mode: the JWT `email` claim is
+looked up here before falling back to `user`. Handy when the SSO identity
+differs from the mailbox address — e.g. logging in with `me@gmail.com` to
+access `me@company.com`.
 
 ### Loading a dev `.env`
 
@@ -257,6 +265,55 @@ cpanel-mail-mcp
 Endpoints:
 * `POST /mcp` — MCP Streamable HTTP transport (requires bearer token)
 * `GET  /health` — plain `ok` for reverse-proxy probes
+
+### OAuth 2.1 via Cloudflare Access (optional, for MCP clients that require OAuth)
+
+Adds SSO on top of the multi-user mode. Cloudflare Access SaaS OIDC does the
+actual user login (Google / GitHub / Email OTP); the server verifies the
+resulting JWT and maps `email` → account. Also exposes:
+
+* `GET /.well-known/oauth-protected-resource` (RFC 9728) — root and `/mcp` path-suffixed
+* `GET /.well-known/oauth-authorization-server` (RFC 8414) — composed metadata that adds a `registration_endpoint`
+* `POST /register` (RFC 7591 Dynamic Client Registration) — returns the pre-configured CF client credentials so DCR-only clients can register
+* `WWW-Authenticate: Bearer realm="mcp", resource_metadata="..."` on 401 responses
+
+Env vars to enable:
+
+| var                              | purpose                                    |
+|----------------------------------|--------------------------------------------|
+| `CF_ACCESS_AUD`                  | audience tag / SaaS app Client ID          |
+| `CF_ACCESS_OIDC_ISSUER`          | full CF OIDC issuer URL                    |
+| `MCP_OAUTH_UPSTREAM_ISSUER`      | same as above (enables the DCR proxy)      |
+| `MCP_OAUTH_CLIENT_ID`            | SaaS app Client ID                         |
+| `MCP_OAUTH_CLIENT_SECRET`        | SaaS app Client Secret                     |
+| `MCP_RESOURCE_URL`               | public URL of this server                  |
+
+Full setup (CF dashboard config, systemd env file, ingress) →
+[`deploy/README.md`](deploy/README.md#cloudflare-access-oidc-optional-but-recommended-for-team-use).
+
+## Client compatibility
+
+| Client                                          | Auth mode                       | Status |
+|-------------------------------------------------|---------------------------------|--------|
+| Claude Code CLI (`claude mcp add --transport http … -H "Authorization: Bearer …"`) | Multi-user bearer                | ✅ Works |
+| Claude Code CLI + OAuth (`--client-id/--client-secret`) | OAuth 2.1 with static credentials | ✅ Works |
+| Anthropic Messages API (`mcp_servers` + `authorization_token`) | Static bearer, no OAuth flow    | ✅ Works |
+| claude.ai Custom Connector (web)                | OAuth 2.1 via CF Access OIDC    | ⚠️ Beta — see below |
+
+### claude.ai Custom Connector — known issue
+
+At time of writing (Claude Custom Connectors are still marked BETA), setup
+fails with an opaque `ofid_...` reference from Anthropic's frontend, even
+though the server exposes all endpoints per MCP OAuth spec 2025-06-18:
+protected-resource metadata, AS metadata with `registration_endpoint`,
+correct `WWW-Authenticate` challenge, and CF Access AUD/issuer matching the
+signed JWTs. Anthropic's public docs don't detail the exact validation
+their backend performs, and the `ofid_...` references only resolve inside
+Anthropic's support system.
+
+Workaround: use the Claude Code CLI (which works fully) while you wait for
+either an Anthropic support response or the beta to stabilize. If you get
+this working, please open an issue with the exact registration steps.
 
 ## Send gate (recommended when an agent has this tool)
 
