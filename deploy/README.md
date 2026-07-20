@@ -124,6 +124,9 @@ claude mcp list | grep cpanel     # should show ✔ Connected
 | `EMAIL_USERS_FILE`             | —              | path to users.json → **multi-user mode**       |
 | `MCP_AUTH_TOKEN`               | —              | single-tenant bearer (ignored if users.json exists) |
 | `MCP_ALLOW_NO_AUTH`            | —              | set truthy to disable auth (dev only)          |
+| `MCP_ALLOWED_HOSTS`            | —              | comma-list of Host headers to accept (**required behind a reverse proxy** — e.g. `mcp.yourdomain.com`) |
+| `MCP_ALLOWED_ORIGINS`          | —              | comma-list of Origin headers to accept (browser clients only) |
+| `MCP_DISABLE_DNS_REBINDING_PROTECTION` | —      | set truthy to bypass Host/Origin checks entirely |
 | `MCP_LOG_LEVEL`                | `INFO`         | stdlib logging level                           |
 | `EMAIL_ACCOUNTS_FILE`          | —              | single-tenant accounts JSON                    |
 | `EMAIL_ACCOUNTS_JSON`          | —              | single-tenant inline JSON                      |

@@ -85,6 +85,9 @@ Environment=MCP_TRANSPORT=streamable-http
 Environment=MCP_HOST=$BIND_HOST
 Environment=MCP_PORT=$BIND_PORT
 Environment=EMAIL_USERS_FILE=$USERS_FILE
+# Behind a reverse proxy (Cloudflare Tunnel, nginx, caddy)? Add your public
+# hostname(s) here or requests come back as 421 Misdirected Request.
+# Environment=MCP_ALLOWED_HOSTS=mcp.yourdomain.com
 ExecStart=$BIN
 Restart=on-failure
 RestartSec=3

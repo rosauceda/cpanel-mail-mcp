@@ -16,9 +16,36 @@ from typing import Any, Callable
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
 from . import imap_ops, smtp_ops, users as users_mod
 from .accounts import Account, get_account, load_accounts
+
+
+def _transport_security() -> TransportSecuritySettings | None:
+    """Build the MCP transport-security settings from env vars.
+
+    FastMCP defaults to allowing only `localhost`/`127.0.0.1` as the Host
+    header (DNS-rebinding protection). Behind a reverse proxy like
+    Cloudflare Tunnel, requests arrive with the public hostname, which
+    triggers 421 Misdirected Request unless we allowlist it.
+
+      MCP_ALLOWED_HOSTS       comma-separated allowlist of Host header values
+      MCP_ALLOWED_ORIGINS     comma-separated allowlist of Origin header values
+      MCP_DISABLE_DNS_REBINDING_PROTECTION  set truthy to turn off both checks
+    """
+    hosts = [h.strip() for h in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    origins = [o.strip() for o in os.environ.get("MCP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+    disabled = os.environ.get("MCP_DISABLE_DNS_REBINDING_PROTECTION", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+    if not hosts and not origins and not disabled:
+        return None
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=not disabled,
+        allowed_hosts=hosts,
+        allowed_origins=origins,
+    )
 
 log = logging.getLogger("cpanel_mail_mcp")
 
@@ -39,7 +66,7 @@ def _load_env() -> None:
 
 _load_env()
 
-mcp = FastMCP("cpanel-mail")
+mcp = FastMCP("cpanel-mail", transport_security=_transport_security())
 
 _accounts_cache: dict[str, Account] | None = None
 
