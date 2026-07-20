@@ -1,0 +1,42 @@
+[project]
+name = "cpanel-mail-mcp"
+version = "0.3.0"
+description = "MCP server for IMAP/SMTP email — multi-account, attachments, ICS calendar invites, drafts, Save-to-Sent. Runs as stdio or Streamable HTTP with bearer auth."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Rodrigo Sauceda", email = "rodrigo.sauceda@gmail.com" }]
+keywords = ["mcp", "email", "imap", "smtp", "cpanel", "calendar", "ics", "attachments"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Communications :: Email",
+]
+dependencies = [
+    "mcp[cli]>=1.2.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/rosauceda/cpanel-mail-mcp"
+Repository = "https://github.com/rosauceda/cpanel-mail-mcp"
+Issues = "https://github.com/rosauceda/cpanel-mail-mcp/issues"
+
+[project.scripts]
+cpanel-mail-mcp = "cpanel_mail_mcp.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

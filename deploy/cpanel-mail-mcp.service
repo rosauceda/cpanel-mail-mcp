@@ -1,0 +1,44 @@
+# Reference copy of the unit that install.sh drops in
+# /etc/systemd/system/cpanel-mail-mcp.service.
+#
+# Assumes:
+#   - user  cpanelmcp exists with home /var/lib/cpanelmcp
+#   - binary at /var/lib/cpanelmcp/.local/bin/cpanel-mail-mcp (pipx)
+#   - config in /etc/cpanel-mail-mcp/{accounts.json,env}
+#
+# Edit the Environment= lines if you changed the defaults, then:
+#   systemctl daemon-reload && systemctl restart cpanel-mail-mcp
+
+[Unit]
+Description=cpanel-mail-mcp — HTTP MCP server for IMAP/SMTP mailboxes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cpanelmcp
+Group=cpanelmcp
+Environment=MCP_TRANSPORT=streamable-http
+Environment=MCP_HOST=127.0.0.1
+Environment=MCP_PORT=8080
+Environment=EMAIL_ACCOUNTS_FILE=/etc/cpanel-mail-mcp/accounts.json
+EnvironmentFile=/etc/cpanel-mail-mcp/env
+ExecStart=/var/lib/cpanelmcp/.local/bin/cpanel-mail-mcp
+Restart=on-failure
+RestartSec=3
+
+# hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/cpanelmcp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
