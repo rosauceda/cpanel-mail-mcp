@@ -368,9 +368,24 @@ async def _send_json(send, status: int, payload: bytes, extra_headers: list | No
     await send({"type": "http.response.body", "body": payload})
 
 
+_www_authenticate_header: bytes = b'Bearer realm="mcp"'
+
+
+def _set_www_authenticate(resource_url: str) -> None:
+    """Update the WWW-Authenticate header to point 401 responses at the
+    protected-resource metadata URL (RFC 9728 §5.1). Some MCP clients
+    (Claude Custom Connectors) need this hint to start the OAuth flow."""
+    global _www_authenticate_header
+    if resource_url:
+        _www_authenticate_header = (
+            f'Bearer realm="mcp", '
+            f'resource_metadata="{resource_url}/.well-known/oauth-protected-resource"'
+        ).encode()
+
+
 async def _send_401(send, detail: str = "unauthorized") -> None:
     body = f'{{"error":"{detail}"}}'.encode()
-    await _send_json(send, 401, body, [(b"www-authenticate", b'Bearer realm="mcp"')])
+    await _send_json(send, 401, body, [(b"www-authenticate", _www_authenticate_header)])
 
 
 async def _send_403(send, detail: str) -> None:
@@ -518,7 +533,13 @@ class WellKnownASGI:
         if path in ("/health", "/healthz"):
             await _send_json(send, 200, b"ok", [(b"content-type", b"text/plain; charset=utf-8")])
             return
-        if path == "/.well-known/oauth-protected-resource":
+        # Both the root well-known URL and the path-suffixed variant
+        # (`/.well-known/oauth-protected-resource/mcp`, RFC 9728 §3.3 — the
+        # form recent MCP clients like Claude try first) return the same
+        # metadata JSON.
+        if path == "/.well-known/oauth-protected-resource" or path.startswith(
+            "/.well-known/oauth-protected-resource/"
+        ):
             await _send_json(send, 200, self._prm_body)
             return
         await self.app(scope, receive, send)
@@ -598,9 +619,10 @@ def serve() -> None:
         log.warning("bearer auth DISABLED via MCP_ALLOW_NO_AUTH — do not expose this port publicly")
 
     # Wrap with the well-known layer so /health and /.well-known/* bypass auth.
-    resource_url = os.environ.get("MCP_RESOURCE_URL", "").strip()
+    resource_url = os.environ.get("MCP_RESOURCE_URL", "").strip().rstrip("/")
     as_urls = [u.strip() for u in os.environ.get("MCP_OAUTH_AUTHORIZATION_SERVERS", "").split(",") if u.strip()]
     if resource_url:
+        _set_www_authenticate(resource_url)
         app = WellKnownASGI(app, resource_url=resource_url, authorization_servers=as_urls)
         log.info(
             "OAuth protected-resource metadata at %s/.well-known/oauth-protected-resource "
