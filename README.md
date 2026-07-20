@@ -6,8 +6,13 @@ plain IMAP + SMTP.
 
 ## Features
 
+* **22 typed MCP tools** — one per operation with Pydantic input/output schemas, tool annotations (`readOnlyHint`/`destructiveHint`/…), and actionable error messages
+* **Full mailbox management** — read, search, threading, move, copy, flag, star, delete, reply, forward, drafts, calendar invites, folder create/delete/rename
 * **Multi-user server mode** — one instance, many users, each with their own bearer token and mailbox (per-request isolation)
 * **OAuth 2.1 via Cloudflare Access** — optional SSO (Google / GitHub / Email OTP) instead of shared bearer tokens; server exposes RFC 9728 protected-resource metadata, RFC 8414 AS metadata, and RFC 7591 DCR — proxied over CF Access SaaS OIDC
+* **Idempotent sends** — pass `idempotency_key` on `send_email`/`reply_email`/`forward_email`/`send_invite` to safely retry after client timeouts
+* **Per-caller rate limiting** — sliding window (send: 30/min, read: 300/min defaults), tunable per bucket
+* **Attachment size guard** — configurable cap (default 25 MB total)
 * **Multi-account** — manage multiple email accounts from different providers
 * **Read, search, list** — full IMAP support with folder browsing
 * **Send emails** — plain text, HTML, or both (multipart/alternative)
@@ -112,37 +117,43 @@ elsewhere with:
 export EMAIL_ENV_FILE=/absolute/path/to/.env
 ```
 
-## Usage — the `email` tool
+## Tools
 
-The server exposes **one** MCP tool named `email`. Call it with an `action`
-string and a `params` dict. Discover actions with `action='help'` — the
-default when `action` is omitted:
+Since 0.7.0 the server exposes one tool per operation (was a single
+dispatcher tool before). Every tool has a typed Pydantic input schema, an
+`outputSchema` for `structuredContent`, and annotations
+(`readOnlyHint` / `destructiveHint` / `idempotentHint` / `openWorldHint`)
+so clients can render the right approval UI.
 
-```json
-{ "action": "help" }
-```
+| tool                    | annotations                          | purpose                                       |
+|-------------------------|--------------------------------------|-----------------------------------------------|
+| `list_accounts`         | read-only, idempotent                | Accounts visible to caller (no secrets)       |
+| `list_folders`          | read-only, idempotent, openWorld     | IMAP folders (UTF-7 decoded)                  |
+| `list_recent`           | read-only, idempotent, openWorld     | Paginated list of recent messages             |
+| `search_emails`         | read-only, idempotent, openWorld     | IMAP SEARCH by FROM/TO/SUBJECT/BODY/TEXT      |
+| `read_email`            | read-only, idempotent, openWorld     | Headers + body (opt: attachments as base64)   |
+| `download_attachments`  | read-only, idempotent, openWorld     | Fetch attachments by name filter              |
+| `get_thread`            | read-only, idempotent, openWorld     | Group messages by Message-ID/References       |
+| `send_email`            | **destructive**, idempotent          | Send new message (attachments, HTML, save-to-sent) |
+| `reply_email`           | **destructive**, idempotent          | Reply to UID, preserves References chain      |
+| `forward_email`         | **destructive**, idempotent          | Forward UID (attaches original body + files)  |
+| `send_invite`           | **destructive**, idempotent          | ICS calendar invite (RFC 5545, METHOD:REQUEST)|
+| `save_draft`            | non-destructive, idempotent          | APPEND a draft to Drafts folder               |
+| `mark_read`/`mark_unread`| non-destructive, idempotent, openWorld | Toggle \\Seen flag                        |
+| `star_email`/`unstar_email`| non-destructive, idempotent, openWorld | Toggle \\Flagged flag                    |
+| `move_email`            | non-destructive, idempotent          | RFC 6851 MOVE (COPY+EXPUNGE fallback)         |
+| `copy_email`            | non-destructive                      | IMAP COPY                                     |
+| `delete_email`          | **destructive**, idempotent          | Soft-delete → Trash (or hard with `permanent=true`) |
+| `create_folder`         | non-destructive                      | IMAP CREATE + SUBSCRIBE                       |
+| `delete_folder`         | **destructive**, idempotent          | IMAP DELETE (must be empty)                   |
+| `rename_folder`         | non-destructive                      | IMAP RENAME                                   |
 
-### Actions at a glance
-
-| action                | purpose                                          |
-|-----------------------|--------------------------------------------------|
-| `help`                | list all actions and their signatures            |
-| `list_accounts`       | see configured accounts (no secrets returned)    |
-| `list_folders`        | list IMAP folders (UTF-7 decoded)                |
-| `list_recent`         | last N messages of a folder                      |
-| `search`              | IMAP search by FROM/TO/SUBJECT/BODY/TEXT         |
-| `read`                | read a message by UID (optionally with attachments) |
-| `download_attachments`| fetch attachments as base64                       |
-| `send`                | send an email (text/HTML/attachments)             |
-| `save_draft`          | append a draft to the account's Drafts folder     |
-| `send_invite`         | send an ICS calendar invite                       |
-
-### Send an email with an attachment
+### Example — send with attachment + Save-to-Sent
 
 ```json
 {
-  "action": "send",
-  "params": {
+  "tool": "send_email",
+  "arguments": {
     "to": "someone@example.com",
     "subject": "Report",
     "text": "See attached.",
@@ -150,7 +161,8 @@ default when `action` is omitted:
     "attachments": [
       {"path": "/tmp/report.pdf"},
       {"name": "note.txt", "content": "hi from inline"}
-    ]
+    ],
+    "idempotency_key": "report-2026-07-20-A"
   }
 }
 ```
@@ -160,63 +172,36 @@ Attachment shapes accepted:
 - `{"name": "x.bin", "content_base64": "..."}` — inline base64
 - `{"name": "x.txt", "content": "hello", "mime": "text/plain"?}` — inline text
 
-### Read a message and its attachments
+Total attachment size is capped by `MCP_MAX_ATTACHMENT_MB` (default 25 MB).
 
-```json
-{
-  "action": "read",
-  "params": {"uid": "42", "folder": "INBOX", "include_attachments": true}
-}
-```
+### Idempotent sends
 
-### Download only specific attachments
+Any of `send_email`, `reply_email`, `forward_email`, `send_invite` accept
+`idempotency_key`. Second call with the same `(caller, key)` within 5
+minutes returns the cached first response (`idempotent_replay: true`) — no
+duplicate delivery on client retries.
 
-```json
-{
-  "action": "download_attachments",
-  "params": {"uid": "42", "filenames": ["report.pdf"]}
-}
-```
+### Rate limiting
 
-### Send a calendar invite
+Per-caller sliding window; defaults:
+- **send** bucket (send/reply/forward/invite/draft): 30 requests/min
+- **read** bucket (everything else): 300 requests/min
 
-```json
-{
-  "action": "send_invite",
-  "params": {
-    "to": "guest@example.com",
-    "subject": "Kickoff",
-    "start": "2026-07-25 09:00",
-    "end":   "2026-07-25 10:00",
-    "location": "Zoom link here",
-    "description": "quarter review"
-  }
-}
-```
+Tune via `MCP_RATE_LIMIT_SEND_PER_MIN` / `MCP_RATE_LIMIT_READ_PER_MIN`.
+When exceeded, the tool returns a structured error with `retry_after_seconds`.
 
-Datetimes accept ISO 8601 (`2026-07-25T09:00:00-06:00`) or
-`YYYY-MM-DD HH:MM`. Naive times are assumed UTC.
+### Reply / forward preserve threading
 
-### Save a draft
-
-```json
-{"action": "save_draft", "params": {"subject": "todo", "text": "..."}}
-```
-
-### Search
-
-```json
-{"action": "search", "params": {"query": "invoice", "field": "SUBJECT"}}
-```
+`reply_email` copies the original `Message-ID` into `In-Reply-To` and appends
+it to `References` so mail clients thread correctly. `forward_email` adds a
+standard `Fwd:` prefix and quotes the original headers + body inline; any
+attachments on the original are re-attached to the forward.
 
 ### Pick an account (multi-account setup)
 
-Any action accepts an optional `account` param; omit it to use the first
-configured account:
-
-```json
-{"action": "send", "params": {"account": "work", "to": "...", "text": "..."}}
-```
+Every tool accepts an optional `account` param; omit it to use the first
+configured account. In multi-user OAuth mode this field is ignored — the
+account is chosen by the caller's bearer token or SSO email.
 
 ## Run as an HTTP server (LXC / VPS / homelab)
 
@@ -300,20 +285,23 @@ Full setup (CF dashboard config, systemd env file, ingress) →
 | Anthropic Messages API (`mcp_servers` + `authorization_token`) | Static bearer, no OAuth flow    | ✅ Works |
 | claude.ai Custom Connector (web)                | OAuth 2.1 via CF Access OIDC    | ⚠️ Beta — see below |
 
-### claude.ai Custom Connector — known issue
+### claude.ai Custom Connector — known issue (may be fixed in 0.7.0)
 
-At time of writing (Claude Custom Connectors are still marked BETA), setup
-fails with an opaque `ofid_...` reference from Anthropic's frontend, even
-though the server exposes all endpoints per MCP OAuth spec 2025-06-18:
-protected-resource metadata, AS metadata with `registration_endpoint`,
-correct `WWW-Authenticate` challenge, and CF Access AUD/issuer matching the
-signed JWTs. Anthropic's public docs don't detail the exact validation
-their backend performs, and the `ofid_...` references only resolve inside
-Anthropic's support system.
+Custom Connectors is still marked BETA. Earlier versions (≤0.6.x) exposed a
+single `email` dispatcher tool with a generic `params: dict`; Anthropic's
+frontend rejected the setup with an opaque `ofid_...` reference before
+opening the OAuth browser. In 0.7.0 the surface changed to 22 individually
+typed tools with `outputSchema` and annotations, which may help.
 
-Workaround: use the Claude Code CLI (which works fully) while you wait for
-either an Anthropic support response or the beta to stabilize. If you get
-this working, please open an issue with the exact registration steps.
+If setup still fails on 0.7.0+:
+
+* Fill in the **OAuth Client ID** and **Secreto del cliente OAuth** fields
+  from your CF Access SaaS app manually (leaving them empty relies on DCR,
+  which we proxy but Claude's frontend may still fail on).
+* Contact Anthropic support with the exact `ofid_...` reference from the
+  error toast — only they can look up what specifically failed.
+* Meanwhile use the Claude Code CLI (works fully) or the Messages API with
+  a static `authorization_token`.
 
 ## Send gate (recommended when an agent has this tool)
 

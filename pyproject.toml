@@ -1,7 +1,7 @@
 [project]
 name = "cpanel-mail-mcp"
-version = "0.6.1"
-description = "MCP server for IMAP/SMTP email — multi-user, Cloudflare Access OIDC, multi-account, attachments, ICS invites, drafts, Save-to-Sent. Runs as stdio or Streamable HTTP."
+version = "0.7.0"
+description = "MCP server for IMAP/SMTP email — 22 typed tools (read/send/reply/forward/move/flag/folder mgmt), multi-user, CF Access OIDC, DCR proxy, rate limits, send idempotency, ICS invites."
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
