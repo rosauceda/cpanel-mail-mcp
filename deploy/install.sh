@@ -42,7 +42,8 @@ fi
 install -d -m 750 -o "$USER_NAME" -g "$USER_NAME" "$CONFIG_DIR"
 
 echo "==> pipx install cpanel-mail-mcp (as $USER_NAME)"
-sudo -u "$USER_NAME" -H env HOME="$STATE_DIR" PATH="$STATE_DIR/.local/bin:/usr/bin:/bin" bash -lc '
+# runuser (util-linux) works on minimal images that don't ship sudo
+runuser -u "$USER_NAME" -- env HOME="$STATE_DIR" PATH="$STATE_DIR/.local/bin:/usr/bin:/bin" bash -lc '
   set -e
   pipx install --force cpanel-mail-mcp
 '

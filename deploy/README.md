@@ -94,8 +94,9 @@ claude mcp list | grep cpanel     # should show ✔ Connected
 ## Upgrade the server
 
 ```bash
-sudo -u cpanelmcp -H bash -lc 'PATH="$HOME/.local/bin:$PATH" pipx upgrade cpanel-mail-mcp'
-sudo systemctl restart cpanel-mail-mcp
+runuser -u cpanelmcp -- env HOME=/var/lib/cpanelmcp PATH=/var/lib/cpanelmcp/.local/bin:/usr/bin:/bin \
+  pipx upgrade cpanel-mail-mcp
+systemctl restart cpanel-mail-mcp
 ```
 
 ## Uninstall
