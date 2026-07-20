@@ -69,14 +69,20 @@ class OAuthProxy:
         return data
 
     def composed_metadata(self) -> bytes:
-        """Return the AS metadata JSON we advertise to MCP clients."""
+        """Return the AS metadata JSON we advertise to MCP clients.
+
+        Critical: `issuer` MUST match the `iss` claim CF puts in the JWTs
+        it signs — MCP clients (Claude Connectors) reject tokens whose iss
+        doesn't match the AS issuer they discovered. So we advertise CF's
+        issuer even though we serve the metadata document ourselves.
+        `registration_endpoint` still points to us so DCR-capable clients
+        get a valid response (we return the static CF client_id/secret).
+        """
         if self._composed_cache is not None:
             return self._composed_cache
         u = self._fetch_upstream()
         meta = {
-            # Advertise ourselves as the AS — clients will PKCE + register with us,
-            # then get redirected to CF for the actual login.
-            "issuer": self.resource_url,
+            "issuer": self.upstream_issuer,
             "authorization_endpoint": u.get("authorization_endpoint"),
             "token_endpoint": u.get("token_endpoint"),
             "jwks_uri": u.get("jwks_uri"),
