@@ -27,14 +27,23 @@ class CFAccessInvalid(Exception):
 
 
 class CFAccessVerifier:
-    def __init__(self, team_domain: str, audience: str) -> None:
+    def __init__(
+        self,
+        team_domain: str,
+        audience: str,
+        *,
+        issuer: str | None = None,
+        jwks_url: str | None = None,
+    ) -> None:
         team_domain = team_domain.strip().rstrip("/")
         if team_domain.startswith("https://"):
             team_domain = team_domain[len("https://") :]
         self.team_domain = team_domain
         self.audience = audience.strip()
-        self.issuer = f"https://{self.team_domain}"
-        self.jwks_url = f"{self.issuer}/cdn-cgi/access/certs"
+        # SaaS OIDC apps have issuer/JWKS at `.../cdn-cgi/access/sso/oidc/<app_uid>`.
+        # Self-hosted apps use the team root. Callers can override.
+        self.issuer = (issuer or f"https://{self.team_domain}").rstrip("/")
+        self.jwks_url = jwks_url or f"{self.issuer}/cdn-cgi/access/certs"
         # PyJWKClient caches keys in-process; 1h lifespan matches CF's rotation cadence
         self._jwks = PyJWKClient(self.jwks_url, cache_keys=True, lifespan=3600)
 
@@ -55,15 +64,38 @@ class CFAccessVerifier:
 
 
 def from_env() -> CFAccessVerifier | None:
-    """Build a verifier from `CF_ACCESS_TEAM_DOMAIN` + `CF_ACCESS_AUD` env vars.
+    """Build a verifier from env vars. Two configurations:
 
-    Returns None if either is unset — server keeps working with bearer-only auth.
+    SaaS OIDC (Claude Connectors talk OAuth 2.1 against Cloudflare):
+        CF_ACCESS_AUD           = the SaaS app's Client ID (== App UID in CF)
+        CF_ACCESS_OIDC_ISSUER   = full issuer URL, e.g.
+                                  https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<app_uid>
+        CF_ACCESS_JWKS_URL      = optional; defaults to `<issuer>/jwks`
+
+    Self-hosted Access (browser SSO in front of the domain — legacy):
+        CF_ACCESS_TEAM_DOMAIN   = <team>.cloudflareaccess.com
+        CF_ACCESS_AUD           = the app's Application Audience Tag
+
+    Returns None if the required vars aren't set — server falls back to
+    bearer-only auth so existing installs keep working.
     """
-    team = os.environ.get("CF_ACCESS_TEAM_DOMAIN", "").strip()
     aud = os.environ.get("CF_ACCESS_AUD", "").strip()
-    if not team or not aud:
+    if not aud:
         return None
-    return CFAccessVerifier(team, aud)
+
+    issuer = os.environ.get("CF_ACCESS_OIDC_ISSUER", "").strip()
+    if issuer:
+        if not issuer.startswith("https://"):
+            issuer = "https://" + issuer
+        issuer = issuer.rstrip("/")
+        jwks_url = os.environ.get("CF_ACCESS_JWKS_URL", "").strip() or f"{issuer}/jwks"
+        team_domain = issuer[len("https://"):].split("/", 1)[0]
+        return CFAccessVerifier(team_domain, aud, issuer=issuer, jwks_url=jwks_url)
+
+    team = os.environ.get("CF_ACCESS_TEAM_DOMAIN", "").strip()
+    if team:
+        return CFAccessVerifier(team, aud)
+    return None
 
 
 def extract_email(claims: dict[str, Any]) -> str | None:
