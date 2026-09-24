@@ -60,20 +60,22 @@ def cmd_add_user(args: argparse.Namespace) -> int:
         "save_to_sent": args.save_to_sent,
         "from_name": args.from_name,
     }
+    if args.trash_folder:
+        account_dict["trash_folder"] = args.trash_folder
     if args.sso_email:
         account_dict["sso_emails"] = [e.strip() for e in args.sso_email if e.strip()]
     all_users.append({"token": token, "account": account_dict})
     users_mod.save_users(all_users)
-    print(f"added user: {args.email}")
+    print(f"added user: {args.email} (active now — the running server reloads users.json)")
     print()
     print("bearer token (SHARE ONCE — you can't recover it later):")
     print(f"  {token}")
     print()
-    print("The user registers in their Claude Code with:")
+    print("The user registers in their Claude Code with (URL before --header):")
     print(
-        f'  claude mcp add --transport http --scope user cpanel-mail \\\n'
-        f'    --header "Authorization: Bearer {token}" \\\n'
-        f"    https://YOUR-HOSTNAME/mcp"
+        f"  claude mcp add --transport http --scope user cpanel-mail \\\n"
+        f"    https://YOUR-HOSTNAME/mcp \\\n"
+        f'    --header "Authorization: Bearer {token}"'
     )
     return 0
 
@@ -149,7 +151,7 @@ def cmd_rotate_token(args: argparse.Namespace) -> int:
     users_mod.save_users(all_users)
     print(f"new token for {args.email}:")
     print(f"  {token}")
-    print("(previous token is revoked immediately)")
+    print("(the previous token stops working on its next request — no restart needed)")
     return 0
 
 
@@ -167,6 +169,11 @@ def build_parser() -> argparse.ArgumentParser:
     add.add_argument("--smtp-port", dest="smtp_port", type=int, default=465)
     add.add_argument("--sent-folder", dest="sent_folder", default="INBOX.Sent")
     add.add_argument("--drafts-folder", dest="drafts_folder", default="INBOX.Drafts")
+    add.add_argument(
+        "--trash-folder",
+        dest="trash_folder",
+        help="Trash folder for soft deletes (default: auto-detect via SPECIAL-USE \\Trash)",
+    )
     add.add_argument(
         "--no-save-to-sent",
         dest="save_to_sent",

@@ -7,14 +7,9 @@ declared output shape.
 """
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
 from pydantic import BaseModel, Field
-
-# ── Attachments ────────────────────────────────────────────────────────
-
-AttachmentIn = dict  # {path|content|content_base64, name?, mime?}
-
 
 # ── Common output shapes ───────────────────────────────────────────────
 
@@ -26,6 +21,9 @@ class AccountInfo(BaseModel):
     imap_host: str
     sent_folder: str
     drafts_folder: str
+    trash_folder: str | None = Field(
+        default=None, description="Configured Trash folder; null = auto-detected on delete."
+    )
 
 
 class ListAccountsResult(BaseModel):
@@ -45,12 +43,22 @@ class ListFoldersResult(BaseModel):
 
 
 class MessageSummary(BaseModel):
-    uid: str
+    uid: str = Field(description="IMAP UID — stable identifier to pass to other tools.")
     from_: str = Field(alias="from")
     to: str
     cc: str = ""
     subject: str
     date: str | None = None
+    flags: list[str] = Field(
+        default_factory=list,
+        description="IMAP flags, e.g. \\Seen (read), \\Flagged (starred). No \\Seen = unread.",
+    )
+    has_attachments: bool | None = Field(
+        default=None,
+        description="True if the message carries files (images embedded in the HTML "
+                    "body aren't counted). null = the server didn't report its structure.",
+    )
+    attachment_count: int | None = None
 
     model_config = {"populate_by_name": True}
 
@@ -80,6 +88,10 @@ class AttachmentMeta(BaseModel):
     filename: str
     mime: str
     size: int | None = None
+    embedded: bool = Field(
+        default=False,
+        description="True for images embedded in the HTML body (e.g. signature logos), not real files.",
+    )
     content_base64: str | None = Field(
         default=None,
         description="Base64-encoded content. Only populated when include_attachments=true.",
@@ -93,6 +105,13 @@ class ReadEmailResult(BaseModel):
     cc: str = ""
     subject: str
     date: str | None = None
+    message_id: str | None = None
+    in_reply_to: str | None = None
+    references: str | None = None
+    reply_to: str | None = None
+    flags: list[str] = Field(default_factory=list)
+    has_attachments: bool = False
+    attachment_count: int = 0
     body_text: str
     body_html: str
     attachments: list[AttachmentMeta]
@@ -141,7 +160,10 @@ class MoveResult(BaseModel):
     uid: str
     source_folder: str
     destination_folder: str
-    new_uid: str | None = None
+    new_uid: str | None = Field(
+        default=None, description="UID in the destination folder, when the server reports it."
+    )
+    method: str | None = None
 
 
 class DeleteResult(BaseModel):
@@ -152,6 +174,8 @@ class DeleteResult(BaseModel):
     permanently_deleted: bool = Field(
         description="True if hard-deleted (Expunge). False if only moved to Trash."
     )
+    moved_to: str | None = None
+    new_uid: str | None = None
 
 
 class FolderMutationResult(BaseModel):
@@ -168,19 +192,3 @@ class ThreadResult(BaseModel):
     root_uid: str
     subject: str
     messages: list[MessageSummary]
-
-
-# ── Error envelope ─────────────────────────────────────────────────────
-
-
-class ToolError(BaseModel):
-    """Structured error returned inside `isError=true` tool responses.
-
-    Every field except `error` is optional. `hint` should tell the caller
-    exactly what to do next (`call list_folders to see valid names`, etc).
-    """
-
-    error: str
-    hint: str | None = None
-    code: str | None = None
-    context: dict[str, Any] | None = None

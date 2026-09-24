@@ -30,6 +30,8 @@ class Account:
     # mode: the JWT's email claim is looked up here first, then falls back
     # to matching against `user`. Empty tuple = only `user` matches.
     sso_emails: tuple[str, ...] = ()
+    # None = auto-detect (SPECIAL-USE \Trash, then common names) on delete.
+    trash_folder: str | None = None
 
 
 def _from_dict(d: dict) -> Account:
@@ -53,6 +55,7 @@ def _from_dict(d: dict) -> Account:
         save_to_sent=bool(d.get("save_to_sent", True)),
         from_name=d.get("from_name"),
         sso_emails=sso,
+        trash_folder=d.get("trash_folder") or None,
     )
 
 
@@ -72,6 +75,7 @@ def _legacy() -> Account | None:
             "imap_port": int(os.environ.get("CPANEL_IMAP_PORT", "993")),
             "sent_folder": os.environ.get("CPANEL_SENT_FOLDER", "INBOX.Sent"),
             "drafts_folder": os.environ.get("CPANEL_DRAFTS_FOLDER", "INBOX.Drafts"),
+            "trash_folder": os.environ.get("CPANEL_TRASH_FOLDER"),
             "save_to_sent": os.environ.get("CPANEL_SAVE_TO_SENT", "true").lower() != "false",
             "from_name": os.environ.get("CPANEL_FROM_NAME"),
         }

@@ -1,8 +1,9 @@
 """Actionable-error helpers.
 
 Every user-facing error we raise carries a `hint` string suggesting the
-next tool call the agent can make to unstick itself. Falls through to the
-MCP tool response as `structuredContent.error + .hint`.
+next tool call the agent can make to unstick itself. FastMCP turns a raised
+exception into the tool's error text via `str(e)`, so `__str__` carries the
+hint and code along with the message.
 """
 from __future__ import annotations
 
@@ -33,6 +34,14 @@ class ToolError(Exception):
         self.hint = hint
         self.code = code
         self.context = context
+
+    def __str__(self) -> str:
+        s = self.error
+        if self.hint:
+            s += f"\nHint: {self.hint}"
+        if self.code:
+            s += f"\nCode: {self.code}"
+        return s
 
     def as_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"error": self.error}
@@ -107,6 +116,40 @@ class RateLimited(ToolError):
             code="rate_limited",
             context={"retry_after_seconds": retry_after_s, "bucket": bucket},
         )
+
+
+class InvalidUid(ToolError):
+    def __init__(self, value: str, what: str = "uid") -> None:
+        super().__init__(
+            f"invalid {what} {value!r}: must be a single numeric IMAP UID",
+            hint="Use the `uid` values returned by `list_recent` / `search_emails`. "
+            "Ranges and wildcards (e.g. `1:*`) are not accepted.",
+            code="invalid_uid",
+            context={what: value},
+        )
+
+
+class TrashNotFound(ToolError):
+    def __init__(self, account: str) -> None:
+        super().__init__(
+            f"no Trash folder found for account {account!r}; nothing was deleted",
+            hint="Call `list_folders` and pass the right folder as `trash_folder`, "
+            "or pass `permanent=true` to delete for good.",
+            code="trash_not_found",
+            context={"account": account},
+        )
+
+
+class AttachmentPathNotAllowed(ToolError):
+    def __init__(self, path: str, root: str | None) -> None:
+        if root:
+            msg = f"attachment path {path!r} is outside the allowed directory {root!r}"
+            hint = f"Place the file under {root} or send it as `content_base64`."
+        else:
+            msg = f"attachments by `path` are disabled on this server ({path!r})"
+            hint = "Send the file as `content_base64` (or `content` for text) instead."
+        super().__init__(msg, hint=hint, code="attachment_path_not_allowed",
+                         context={"path": path, "allowed_root": root})
 
 
 class UnknownAccount(ToolError):

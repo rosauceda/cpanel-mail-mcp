@@ -8,12 +8,37 @@ import os
 import smtplib
 import ssl
 from email.message import EmailMessage
-from email.utils import formataddr, make_msgid
+from email.utils import formataddr, formatdate, getaddresses, make_msgid
 from pathlib import Path
 
 from .accounts import Account
-from .errors import AttachmentTooLarge
+from .errors import AttachmentPathNotAllowed, AttachmentTooLarge
 from .ics import build_ics
+
+# Attachments by server-side `path`. In stdio mode the caller *is* the local
+# user, so any readable path is fine. In HTTP mode the caller is remote and
+# must never read the server's files (e.g. users.json with everyone's
+# passwords): `serve()` disables paths unless MCP_ATTACHMENT_DIR confines them.
+_path_attachments_enabled = True
+_path_attachments_root: Path | None = None
+
+
+def configure_path_attachments(enabled: bool, root: str | None = None) -> None:
+    global _path_attachments_enabled, _path_attachments_root
+    _path_attachments_enabled = enabled
+    _path_attachments_root = Path(root).expanduser().resolve() if root else None
+
+
+def _attachment_path(raw: object) -> Path:
+    p = Path(str(raw)).expanduser()
+    if not _path_attachments_enabled:
+        raise AttachmentPathNotAllowed(str(raw), None)
+    if _path_attachments_root is not None:
+        resolved = p.resolve()
+        if not resolved.is_relative_to(_path_attachments_root):
+            raise AttachmentPathNotAllowed(str(raw), str(_path_attachments_root))
+        return resolved
+    return p
 
 
 def _attachment_limit_bytes() -> int:
@@ -42,7 +67,7 @@ def _connect(a: Account) -> smtplib.SMTP | smtplib.SMTP_SSL:
 def _attach(msg: EmailMessage, att: dict) -> None:
     name = att.get("name") or att.get("filename")
     if "path" in att:
-        p = Path(str(att["path"])).expanduser()
+        p = _attachment_path(att["path"])
         if not p.is_file():
             raise ValueError(f"attachment path not found: {p}")
         data = p.read_bytes()
@@ -74,12 +99,15 @@ def _from_header(a: Account) -> str:
 
 
 def _recipients(to: str, cc: str | None, bcc: str | None) -> list[str]:
-    r = [x.strip() for x in to.split(",") if x.strip()]
-    if cc:
-        r += [x.strip() for x in cc.split(",") if x.strip()]
-    if bcc:
-        r += [x.strip() for x in bcc.split(",") if x.strip()]
-    return r
+    """Bare addresses for RCPT TO. Parses RFC 5322 lists, so display names
+    with commas (`"Doe, John" <j@x.com>`) stay one recipient."""
+    fields = [f for f in (to, cc, bcc) if f]
+    out: list[str] = []
+    for _, addr in getaddresses(fields):
+        addr = addr.strip()
+        if addr and "@" in addr and addr.lower() not in {x.lower() for x in out}:
+            out.append(addr)
+    return out
 
 
 def build_message(
@@ -97,6 +125,7 @@ def build_message(
 ) -> EmailMessage:
     msg = EmailMessage()
     msg["Message-ID"] = make_msgid(domain=a.smtp_host or "localhost")
+    msg["Date"] = formatdate(localtime=True)
     msg["From"] = _from_header(a)
     if to:
         msg["To"] = to
@@ -130,7 +159,7 @@ def _enforce_attachment_limit(attachments: list[dict]) -> None:
     total = 0
     for att in attachments:
         if "path" in att:
-            p = Path(str(att["path"])).expanduser()
+            p = _attachment_path(att["path"])
             if p.is_file():
                 total += p.stat().st_size
         elif "content_base64" in att:
@@ -171,21 +200,6 @@ def send(
     }
 
 
-def send_raw(a: Account, msg: EmailMessage) -> dict:
-    """Send an already-built EmailMessage. Used by reply/forward paths."""
-    to = msg["To"] or ""
-    cc = msg["Cc"] or None
-    bcc = msg["Bcc"] or None
-    recipients = _recipients(to, cc, bcc)
-    with _connect(a) as s:
-        s.send_message(msg, to_addrs=recipients)
-    return {
-        "ok": True,
-        "recipients": recipients,
-        "message_id": msg["Message-ID"],
-        "raw": msg.as_bytes(),
-    }
-
 
 def send_invite(
     a: Account,
@@ -201,19 +215,22 @@ def send_invite(
     bcc: str | None = None,
     text: str | None = None,
     html: str | None = None,
+    timezone: str | None = None,
 ) -> dict:
-    to_list = [x.strip() for x in to.split(",") if x.strip()]
     ics = build_ics(
         subject=subject,
         start=start,
         end=end,
         description=description,
         location=location,
-        organizer=organizer or a.user,
-        attendees=attendees or to_list,
+        organizer=organizer or _from_header(a),
+        attendees=attendees or [x for x in (to,) if x],
+        tz=timezone,
     )
 
     msg = EmailMessage()
+    msg["Message-ID"] = make_msgid(domain=a.smtp_host or "localhost")
+    msg["Date"] = formatdate(localtime=True)
     msg["From"] = _from_header(a)
     msg["To"] = to
     if cc:
@@ -247,4 +264,9 @@ def send_invite(
     recipients = _recipients(to, cc, bcc)
     with _connect(a) as s:
         s.send_message(msg, to_addrs=recipients)
-    return {"ok": True, "recipients": recipients, "raw": msg.as_bytes()}
+    return {
+        "ok": True,
+        "recipients": recipients,
+        "message_id": msg["Message-ID"],
+        "raw": msg.as_bytes(),
+    }

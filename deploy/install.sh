@@ -46,7 +46,7 @@ echo "==> pipx install cpanel-mail-mcp (as $USER_NAME)"
 # runuser (util-linux) works on minimal images that don't ship sudo
 runuser -u "$USER_NAME" -- env HOME="$STATE_DIR" PATH="$STATE_DIR/.local/bin:/usr/bin:/bin" bash -lc '
   set -e
-  pipx install --force cpanel-mail-mcp
+  pipx install --force --pip-args="--no-cache-dir" cpanel-mail-mcp
 '
 BIN="$STATE_DIR/.local/bin/cpanel-mail-mcp"
 [[ -x "$BIN" ]] || { echo "no encontré el binario en $BIN" >&2; exit 1; }
@@ -89,12 +89,15 @@ Environment=EMAIL_USERS_FILE=$USERS_FILE
 # hostname(s) here or requests come back as 421 Misdirected Request.
 # Environment=MCP_ALLOWED_HOSTS=mcp.yourdomain.com
 
+# cloudflared on another LXC/VM? Bind all interfaces instead of 127.0.0.1:
+# Environment=MCP_HOST=0.0.0.0
+
 # ── Cloudflare Access OIDC (optional; enables OAuth 2.1 for Claude Custom
 #    Connector). Set these once you've created a SaaS OIDC app in CF Access.
-# Environment=CF_ACCESS_TEAM_DOMAIN=<team>.cloudflareaccess.com
-# Environment=CF_ACCESS_AUD=<application-audience-tag>
+# Environment=CF_ACCESS_AUD=<client-id>
+# Environment=CF_ACCESS_OIDC_ISSUER=https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<client-id>
 # Environment=MCP_RESOURCE_URL=https://mcp.yourdomain.com
-# Environment=MCP_OAUTH_AUTHORIZATION_SERVERS=https://<team>.cloudflareaccess.com/cdn-cgi/access/sso/oidc/<app_uid>
+# EnvironmentFile=$CONFIG_DIR/oauth-proxy.env   # MCP_OAUTH_UPSTREAM_ISSUER/CLIENT_ID/CLIENT_SECRET
 ExecStart=$BIN
 Restart=on-failure
 RestartSec=3
@@ -123,7 +126,9 @@ echo "════════════════════════�
 echo " cpanel-mail-mcp instalado (multi-user)."
 echo "══════════════════════════════════════════════════════════════"
 echo
-echo " 1) Da de alta usuarios (uno por persona):"
+echo " 1) Arranca el servicio:  systemctl enable --now cpanel-mail-mcp"
+echo
+echo " 2) Da de alta usuarios (uno por persona; aplica sin reiniciar):"
 echo
 echo "     source /etc/profile.d/cpanel-mail-mcp.sh   # o cierra y abre la sesión SSH"
 echo "     cpanel-mail-mcp admin add-user \\"
@@ -133,7 +138,6 @@ echo
 echo "    Cada 'add-user' imprime el bearer token del usuario. Anótalo y compártelo"
 echo "    con esa persona por un canal seguro (Signal, 1Password Send, etc.)."
 echo
-echo " 2) Arranca el servicio:  systemctl enable --now cpanel-mail-mcp"
 echo " 3) Status:              systemctl status cpanel-mail-mcp"
 echo " 4) Logs:                journalctl -u cpanel-mail-mcp -f"
 echo " 5) Salud:               curl -sf http://$BIND_HOST:$BIND_PORT/health   # -> ok"
@@ -147,8 +151,8 @@ echo "     - service:  http_status:404"
 echo
 echo " Cada usuario, en su Claude Code:"
 echo "   claude mcp add --transport http --scope user cpanel-mail \\"
-echo "     --header \"Authorization: Bearer <SU_TOKEN>\" \\"
-echo "     https://mcp.tudominio.com/mcp"
+echo "     https://mcp.tudominio.com/mcp \\"
+echo "     --header \"Authorization: Bearer <SU_TOKEN>\""
 echo
 echo " Admin CLI extra:"
 echo "   cpanel-mail-mcp admin list-users"

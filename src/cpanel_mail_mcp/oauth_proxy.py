@@ -93,7 +93,7 @@ class OAuthProxy:
             "response_types_supported": u.get("response_types_supported", ["code"]),
             "response_modes_supported": u.get("response_modes_supported", ["query", "fragment"]),
             "token_endpoint_auth_methods_supported": u.get(
-                "token_endpoint_auth_methods",
+                "token_endpoint_auth_methods_supported",
                 ["client_secret_basic", "client_secret_post"],
             ),
             "id_token_signing_alg_values_supported": u.get(
