@@ -129,6 +129,17 @@ class InvalidUid(ToolError):
         )
 
 
+class InvalidSince(ToolError):
+    def __init__(self, value: str) -> None:
+        super().__init__(
+            f"invalid since {value!r}",
+            hint="Use an ISO date/datetime (2026-09-24, 2026-09-24T08:00:00-07:00) "
+            "or a relative span: 30m, 2h, 1d, 1w.",
+            code="invalid_since",
+            context={"since": value},
+        )
+
+
 class TrashNotFound(ToolError):
     def __init__(self, account: str) -> None:
         super().__init__(

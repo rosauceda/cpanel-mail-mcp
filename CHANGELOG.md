@@ -47,6 +47,11 @@ for multi-user HTTP deployments.
 - OAuth proxy reads the upstream `token_endpoint_auth_methods_supported`.
 
 ### Added
+- **`unread_only` and `since` filters** on `list_recent` and `search_emails`.
+  `since` takes an ISO date/datetime or a relative span (`30m`, `2h`, `1d`,
+  `1w`) and is exact to the second (IMAP SINCE widened by a day, then filtered
+  on INTERNALDATE). Every message now carries `received_at` (server receive
+  time) — handy for polling workflows in n8n.
 - **Credentials mode for n8n / Docker** (`MCP_AUTH_MODE=credentials`): each
   request carries the mailbox login (`X-Email-User` + `X-Email-Password`, or
   Basic auth) — n8n's MCP Client Tool "Multiple Headers Auth". No users.json,

@@ -220,3 +220,69 @@ def test_trash_detection_by_common_name(server):
     server.add_folder("INBOX.Trash")  # no SPECIAL-USE flag
     r = imap_ops.delete_message(_acct(), "3", "INBOX")
     assert r["moved_to"] == "INBOX.Trash"
+
+
+# ── unread_only / since ────────────────────────────────────────────────
+
+from datetime import datetime, timedelta, timezone  # noqa: E402
+
+from cpanel_mail_mcp.errors import InvalidSince  # noqa: E402
+
+TZ = timezone(timedelta(hours=-7))
+
+
+def _seed_dated(s: FakeServer) -> None:
+    s.add("INBOX", _mail("old read"), uid=10, flags={"\\Seen"}, received=datetime(2026, 9, 20, 9, 0, tzinfo=TZ))
+    s.add("INBOX", _mail("old unread"), uid=11, received=datetime(2026, 9, 21, 9, 0, tzinfo=TZ))
+    s.add("INBOX", _mail("today early"), uid=12, received=datetime(2026, 9, 24, 7, 0, tzinfo=TZ))
+    s.add("INBOX", _mail("today late read"), uid=13, flags={"\\Seen"}, received=datetime(2026, 9, 24, 15, 30, tzinfo=TZ))
+    s.add("INBOX", _mail("today late unread"), uid=14, received=datetime(2026, 9, 24, 16, 0, tzinfo=TZ))
+
+
+def test_unread_only(server):
+    _seed_dated(server)
+    msgs = imap_ops.list_recent(_acct(), "INBOX", unread_only=True)["messages"]
+    assert [m["uid"] for m in msgs] == ["14", "12", "11"]
+
+
+def test_since_is_exact_to_the_minute_and_reports_received_at(server):
+    _seed_dated(server)
+    res = imap_ops.list_recent(_acct(), "INBOX", since="2026-09-24T15:00:00-07:00")
+    assert [m["uid"] for m in res["messages"]] == ["14", "13"]
+    assert res["messages"][0]["received_at"] == "2026-09-24T16:00:00-07:00"
+    assert res["next_cursor"] is None
+
+
+def test_since_date_only_and_combined_with_unread(server):
+    _seed_dated(server)
+    res = imap_ops.list_recent(_acct(), "INBOX", since="2026-09-24T00:00:00-07:00", unread_only=True)
+    assert [m["uid"] for m in res["messages"]] == ["14", "12"]
+
+
+def test_since_relative(server):
+    now = datetime.now(timezone.utc)
+    server.add("INBOX", _mail("fresh"), uid=30, received=now - timedelta(minutes=5))
+    server.add("INBOX", _mail("stale"), uid=29, received=now - timedelta(hours=3))
+    assert [m["uid"] for m in imap_ops.list_recent(_acct(), "INBOX", since="1h")["messages"]] == ["30"]
+    assert [m["uid"] for m in imap_ops.list_recent(_acct(), "INBOX", since="1d")["messages"]] == ["30", "29"]
+
+
+def test_since_on_search(server):
+    _seed_dated(server)
+    res = imap_ops.search(_acct(), "today", "SUBJECT", "INBOX", since="2026-09-24T15:00:00-07:00",
+                          unread_only=True)
+    assert [m["uid"] for m in res] == ["14"]
+
+
+@pytest.mark.parametrize("bad", ["yesterday", "2026-13-01", "5y", ""])
+def test_invalid_since(server, bad):
+    if not bad:
+        return  # empty = no filter
+    with pytest.raises(InvalidSince):
+        imap_ops.list_recent(_acct(), "INBOX", since=bad)
+
+
+def test_internaldate_parsing_is_locale_independent():
+    d = imap_ops._parse_internaldate(" 4-Sep-2026 08:05:09 -0700")
+    assert d.isoformat() == "2026-09-04T08:05:09-07:00"
+    assert imap_ops._parse_internaldate("garbage") is None

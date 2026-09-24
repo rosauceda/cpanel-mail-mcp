@@ -143,7 +143,7 @@ count; `read_email` lists them with `embedded: true`.
 |-------------------------|--------------------------------------|-----------------------------------------------|
 | `list_accounts`         | read-only, idempotent                | Accounts visible to caller (no secrets)       |
 | `list_folders`          | read-only, idempotent, openWorld     | IMAP folders (UTF-7 decoded)                  |
-| `list_recent`           | read-only, idempotent, openWorld     | Paginated recent messages + flags + `has_attachments` |
+| `list_recent`           | read-only, idempotent, openWorld     | Paginated recent messages + flags + `has_attachments`; filters `unread_only`, `since` (`2h`, `1d`, ISO) |
 | `search_emails`         | read-only, idempotent, openWorld     | IMAP SEARCH by FROM/TO/SUBJECT/BODY/TEXT      |
 | `read_email`            | read-only, idempotent, openWorld     | Headers + body (opt: attachments as base64)   |
 | `download_attachments`  | read-only, idempotent, openWorld     | Fetch attachments by name filter              |

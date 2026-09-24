@@ -49,6 +49,9 @@ class MessageSummary(BaseModel):
     cc: str = ""
     subject: str
     date: str | None = None
+    received_at: str | None = Field(
+        default=None, description="When the mail server received it (IMAP INTERNALDATE), ISO 8601."
+    )
     flags: list[str] = Field(
         default_factory=list,
         description="IMAP flags, e.g. \\Seen (read), \\Flagged (starred). No \\Seen = unread.",

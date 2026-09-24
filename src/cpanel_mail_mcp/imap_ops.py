@@ -14,6 +14,7 @@ import os
 import re
 import time
 from contextlib import contextmanager
+from datetime import datetime, timedelta, timezone
 from email.header import decode_header, make_header
 from email.utils import parsedate_to_datetime
 from typing import Iterator
@@ -23,6 +24,7 @@ from .accounts import Account
 from .errors import (
     FolderNotFound,
     InvalidField,
+    InvalidSince,
     InvalidUid,
     MessageNotFound,
     ToolError,
@@ -34,6 +36,9 @@ _LIST_RE = re.compile(
 )
 _UID_RE = re.compile(rb"\bUID (\d+)")
 _FLAGS_RE = re.compile(rb"\bFLAGS \(([^)]*)\)")
+_INTERNALDATE_RE = re.compile(rb'\bINTERNALDATE "([^"]+)"')
+_MONTHS = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
+_RELATIVE_RE = re.compile(r"^(\d+)\s*(m|min|h|d|w)$")
 _UID_VALUE_RE = re.compile(r"^[1-9]\d{0,9}$")  # a single nz-number, no ranges
 
 _SUMMARY_FIELDS = "FROM TO CC SUBJECT DATE MESSAGE-ID"
@@ -168,11 +173,67 @@ def _parse_fetch(data) -> dict[str, dict]:
         if not um:
             continue
         fm = _FLAGS_RE.search(text)
+        im = _INTERNALDATE_RE.search(text)
         out[um.group(1).decode()] = {
             "body": body,
             "flags": fm.group(1).decode(errors="replace").split() if fm else [],
+            "internaldate": _parse_internaldate(im.group(1).decode()) if im else None,
         }
     return out
+
+
+def _parse_internaldate(s: str) -> datetime | None:
+    """`24-Sep-2026 12:46:30 -0700` → aware datetime (locale-independent)."""
+    m = re.match(r"\s*(\d{1,2})-([A-Za-z]{3})-(\d{4}) (\d{2}):(\d{2}):(\d{2}) ([+-])(\d{2})(\d{2})", s)
+    if not m or m.group(2).title() not in _MONTHS:
+        return None
+    day, mon, year, hh, mm, ss, sign, oh, om = m.groups()
+    offset = timedelta(hours=int(oh), minutes=int(om)) * (1 if sign == "+" else -1)
+    return datetime(int(year), _MONTHS.index(mon.title()) + 1, int(day), int(hh), int(mm), int(ss),
+                    tzinfo=timezone(offset))
+
+
+def parse_since(value: str) -> datetime:
+    """ISO date/datetime or relative span (`30m`, `2h`, `1d`, `1w`) → aware datetime.
+    Times without an offset use MCP_DEFAULT_TIMEZONE, else UTC."""
+    v = str(value).strip()
+    rel = _RELATIVE_RE.match(v.lower())
+    if rel:
+        n, unit = int(rel.group(1)), rel.group(2)
+        span = {"m": timedelta(minutes=n), "min": timedelta(minutes=n), "h": timedelta(hours=n),
+                "d": timedelta(days=n), "w": timedelta(weeks=n)}[unit]
+        return datetime.now(timezone.utc) - span
+    try:
+        dt = datetime.fromisoformat(v.replace("Z", "+00:00"))
+    except ValueError as e:
+        raise InvalidSince(v) from e
+    if dt.tzinfo is None:
+        from .ics import _zone
+        try:
+            dt = dt.replace(tzinfo=_zone(None))
+        except ValueError as e:
+            raise InvalidSince(v) from e
+    return dt
+
+
+def _filter_criteria(unread_only: bool, since_dt: datetime | None) -> list[str]:
+    """IMAP SEARCH keys for the filters. SINCE is day-granular in the server's
+    zone, so it is widened by a day here and made exact on INTERNALDATE after."""
+    crit: list[str] = []
+    if unread_only:
+        crit.append("UNSEEN")
+    if since_dt is not None:
+        d = (since_dt.astimezone(timezone.utc) - timedelta(days=1)).date()
+        crit += ["SINCE", f"{d.day}-{_MONTHS[d.month - 1]}-{d.year}"]
+    return crit
+
+
+def _drop_older(messages: list[dict], since_dt: datetime | None) -> tuple[list[dict], bool]:
+    if since_dt is None:
+        return messages, False
+    kept = [x for x in messages
+            if not x.get("received_at") or datetime.fromisoformat(x["received_at"]) >= since_dt]
+    return kept, len(kept) < len(messages)
 
 
 def _uid_search(m: imaplib.IMAP4_SSL, *criteria: str) -> list[str]:
@@ -182,13 +243,15 @@ def _uid_search(m: imaplib.IMAP4_SSL, *criteria: str) -> list[str]:
     return [x.decode() for x in (data[0].split() if data and data[0] else [])]
 
 
-def _uid_search_text(m: imaplib.IMAP4_SSL, key: str, value: str) -> list[str]:
-    """SEARCH <key> <value> with the value sent as a UTF-8 literal, so accents
-    and quotes work. Falls back to a quoted US-ASCII search for servers that
-    reject CHARSET UTF-8."""
+def _uid_search_text(m: imaplib.IMAP4_SSL, key: str, value: str,
+                     extra: list[str] | None = None) -> list[str]:
+    """SEARCH [extra…] <key> <value> with the value sent as a UTF-8 literal, so
+    accents and quotes work. Falls back to a quoted US-ASCII search for servers
+    that reject CHARSET UTF-8."""
+    extra = extra or []
     try:
         m.literal = value.encode("utf-8")
-        status, data = m.uid("SEARCH", "CHARSET", "UTF-8", key)
+        status, data = m.uid("SEARCH", "CHARSET", "UTF-8", *extra, key)
     except imaplib.IMAP4.error:
         status, data = "BAD", []
     finally:
@@ -197,7 +260,7 @@ def _uid_search_text(m: imaplib.IMAP4_SSL, key: str, value: str) -> list[str]:
         return [x.decode() for x in (data[0].split() if data and data[0] else [])]
     if not value.isascii():
         raise RuntimeError(f"IMAP server rejected a UTF-8 search: {_detail(data)}")
-    return _uid_search(m, key, _quote(value))
+    return _uid_search(m, *extra, key, _quote(value))
 
 
 def _require_message(m: imaplib.IMAP4_SSL, uid: str, folder: str) -> None:
@@ -210,7 +273,7 @@ def _fetch_summaries(m: imaplib.IMAP4_SSL, uids: list[str]) -> list[dict]:
         return []
     status, data = m.uid(
         "FETCH", ",".join(uids),
-        f"(UID FLAGS BODY.PEEK[HEADER.FIELDS ({_SUMMARY_FIELDS})])",
+        f"(UID FLAGS INTERNALDATE BODY.PEEK[HEADER.FIELDS ({_SUMMARY_FIELDS})])",
     )
     if status != "OK":
         raise RuntimeError(f"IMAP FETCH failed: {status} {_detail(data)}")
@@ -223,7 +286,9 @@ def _fetch_summaries(m: imaplib.IMAP4_SSL, uids: list[str]) -> list[dict]:
             continue
         msg = email.message_from_bytes(p["body"])
         n = counts.get(u)
+        received = p.get("internaldate")
         out.append({"uid": u, **_header_meta(msg), "flags": p["flags"],
+                    "received_at": received.isoformat() if received else None,
                     "has_attachments": None if n is None else n > 0,
                     "attachment_count": n})
     return out
@@ -416,22 +481,25 @@ def _detect_trash(m: imaplib.IMAP4_SSL) -> str | None:
 
 
 def list_recent(a: Account, folder: str = "INBOX", limit: int = 20,
-                cursor: str | None = None) -> dict:
-    """Return the newest `limit` messages with UID < `cursor` (newest first).
+                cursor: str | None = None, unread_only: bool = False,
+                since: str | None = None) -> dict:
+    """Return the newest `limit` messages with UID < `cursor` (newest first),
+    optionally only unread ones and/or ones received at or after `since`.
 
     Response shape: {messages: [...], next_cursor: str|None}
     Pass `next_cursor` back as `cursor` to page further back in time.
     """
+    since_dt = parse_since(since) if since else None
     with _session(a) as m:
         _select(m, folder, a.name, readonly=True)
-        uids = sorted(_uid_search(m, "ALL"), key=int)
+        uids = sorted(_uid_search(m, *(_filter_criteria(unread_only, since_dt) or ["ALL"])), key=int)
         if cursor:
             cutoff = int(check_uid(cursor, "cursor"))
             uids = [u for u in uids if int(u) < cutoff]
         page = uids[-limit:][::-1]
-        messages = _fetch_summaries(m, page)
-        next_cursor = page[-1] if page and len(uids) > len(page) else None
-        return {"messages": messages, "next_cursor": next_cursor}
+        messages, dropped = _drop_older(_fetch_summaries(m, page), since_dt)
+        more = bool(page) and len(uids) > len(page) and not dropped
+        return {"messages": messages, "next_cursor": page[-1] if more else None}
 
 
 _SEARCH_FIELDS = ["FROM", "TO", "SUBJECT", "BODY", "TEXT"]
@@ -443,14 +511,18 @@ def search(
     field: str = "SUBJECT",
     folder: str = "INBOX",
     limit: int = 20,
+    unread_only: bool = False,
+    since: str | None = None,
 ) -> list[dict]:
     field_up = field.upper().strip()
     if field_up not in _SEARCH_FIELDS:
         raise InvalidField(field, _SEARCH_FIELDS)
+    since_dt = parse_since(since) if since else None
     with _session(a) as m:
         _select(m, folder, a.name, readonly=True)
-        uids = sorted(_uid_search_text(m, field_up, query), key=int)
-        return _fetch_summaries(m, uids[-limit:][::-1])
+        extra = _filter_criteria(unread_only, since_dt)
+        uids = sorted(_uid_search_text(m, field_up, query, extra), key=int)
+        return _drop_older(_fetch_summaries(m, uids[-limit:][::-1]), since_dt)[0]
 
 
 _MESSAGE_TYPES = ("message/rfc822", "message/global")

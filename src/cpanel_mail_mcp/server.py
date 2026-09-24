@@ -164,6 +164,13 @@ Folder = Annotated[str, Field(description="IMAP folder name (see list_folders). 
 AccountParam = Annotated[
     str | None, Field(description="Account name (list_accounts). Omit for the default/your own.")
 ]
+UnreadOnly = Annotated[bool, Field(description="Only messages without the \\Seen flag (unread).")]
+Since = Annotated[
+    str | None,
+    Field(description="Only messages received at or after this: ISO date/datetime "
+                      "(2026-09-24, 2026-09-24T08:00:00-07:00) or relative (30m, 2h, 1d, 1w). "
+                      "Times without an offset use MCP_DEFAULT_TIMEZONE, else UTC."),
+]
 
 
 # ── Read-only tools ────────────────────────────────────────────────────
@@ -229,6 +236,8 @@ async def list_recent(
         Field(pattern=r"^[1-9][0-9]*$", description="Pass the previous response's `next_cursor` to page older."),
         BeforeValidator(_coerce_uid),
     ] = None,
+    unread_only: UnreadOnly = False,
+    since: Since = None,
     account: AccountParam = None,
 ) -> ListRecentResult:
     """List the most recent messages in a folder, newest first: headers, flags,
@@ -238,7 +247,8 @@ async def list_recent(
     (= previous `next_cursor`) to page further back in time.
     """
     a = _begin("read", account)
-    res = await _io(imap_ops.list_recent, a, folder, limit, cursor=cursor)
+    res = await _io(imap_ops.list_recent, a, folder, limit, cursor=cursor,
+                    unread_only=unread_only, since=since)
     return ListRecentResult(
         account=a.name,
         folder=folder,
@@ -259,6 +269,8 @@ async def search_emails(
     field: Annotated[str, Field(description="One of FROM, TO, SUBJECT, BODY, TEXT.")] = "SUBJECT",
     folder: Folder = "INBOX",
     limit: Annotated[int, Field(ge=1, le=200)] = 20,
+    unread_only: UnreadOnly = False,
+    since: Since = None,
     account: AccountParam = None,
 ) -> SearchResult:
     """IMAP SEARCH over one field, newest first. Each result carries flags and
@@ -268,7 +280,8 @@ async def search_emails(
     doesn't support boolean operators. For richer queries, chain calls.
     """
     a = _begin("read", account)
-    results = await _io(imap_ops.search, a, query, field, folder, limit)
+    results = await _io(imap_ops.search, a, query, field, folder, limit,
+                        unread_only=unread_only, since=since)
     return SearchResult(
         account=a.name, folder=folder, field=field.upper(), query=query,
         results=[MessageSummary(**m) for m in results],

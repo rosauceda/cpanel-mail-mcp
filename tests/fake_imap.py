@@ -12,6 +12,9 @@ import email.utils
 import imaplib
 import re
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+_MON = ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")
 
 
 @dataclass
@@ -19,6 +22,15 @@ class Msg:
     uid: int
     raw: bytes
     flags: set[str] = field(default_factory=set)
+    received: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+
+    def internaldate(self) -> str:
+        d = self.received
+        off = d.utcoffset() or datetime.now(timezone.utc).utcoffset()
+        mins = int(off.total_seconds() // 60)
+        sign = "+" if mins >= 0 else "-"
+        return (f"{d.day:02d}-{_MON[d.month - 1]}-{d.year} {d:%H:%M:%S} "
+                f"{sign}{abs(mins) // 60:02d}{abs(mins) % 60:02d}")
 
 
 @dataclass
@@ -53,12 +65,15 @@ class FakeServer:
         return f
 
     def add(self, folder: str, raw: bytes | str, uid: int | None = None,
-            flags: set[str] | None = None) -> int:
+            flags: set[str] | None = None, received: datetime | None = None) -> int:
         f = self.folders[folder]
         if isinstance(raw, str):
             raw = raw.replace("\n", "\r\n").encode("utf-8")
         uid = uid or f.uidnext
-        f.messages.append(Msg(uid, raw, set(flags or ())))
+        msg = Msg(uid, raw, set(flags or ()))
+        if received is not None:
+            msg.received = received
+        f.messages.append(msg)
         f.messages.sort(key=lambda m: m.uid)
         f.uidnext = max(f.uidnext, uid + 1)
         return uid
@@ -226,10 +241,13 @@ class FakeIMAP:
                 return "NO", [b"[BADCHARSET] Unsupported charset"]
             toks = toks[2:]
 
+        lit = [literal]  # consumed by the one key whose value is the literal
+
         def value():
             if toks:
                 return _unquote(toks.pop(0))
-            return literal.decode("utf-8")
+            v, lit[0] = lit[0], None
+            return v.decode("utf-8")
 
         def expr() -> set[int]:
             key = toks.pop(0).upper()
@@ -240,6 +258,12 @@ class FakeIMAP:
                 return {m.uid for m in self._parse_set(toks.pop(0))}
             if key == "OR":
                 return expr() | expr()
+            if key == "UNSEEN":
+                return {m.uid for m in self.selected.messages if "\\Seen" not in m.flags}
+            if key == "SINCE":
+                day, mon, year = toks.pop(0).split("-")
+                since = datetime(int(year), _MON.index(mon) + 1, int(day)).date()
+                return {m.uid for m in self.selected.messages if m.received.date() >= since}
             if key == "HEADER":
                 name, v = toks.pop(0), value()
                 return {m.uid for m in self.selected.messages
@@ -255,11 +279,8 @@ class FakeIMAP:
             raise imaplib.IMAP4.error(f"unsupported search key {key}")
 
         result: set[int] = set(m.uid for m in self.selected.messages)
-        while toks or literal is not None:
+        while toks:
             result &= expr()
-            literal = None
-            if not toks:
-                break
         return "OK", [" ".join(str(u) for u in sorted(result)).encode()]
 
     def _uid_fetch(self, args, literal):
@@ -284,6 +305,8 @@ class FakeIMAP:
             return "OK", out
         for m in msgs:
             flags = "FLAGS (" + " ".join(sorted(m.flags)) + ")"
+            if "INTERNALDATE" in items:
+                flags += f' INTERNALDATE "{m.internaldate()}"'
             seq = self._seq(m)
             body = None
             section = ""
