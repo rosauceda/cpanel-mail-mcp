@@ -11,6 +11,11 @@
   in listings (BODYSTRUCTURE) and in `read_email` / `download_attachments`,
   with a generated name such as `adjunto-2.pdf`.
 
+### Added
+- `read_email` returns `mime_parts` (the message's MIME tree: type,
+  disposition, file name and size of each part) and the raw `size`, to see
+  why a file is or isn't listed as an attachment.
+
 ## 0.7.1
 
 Safety and correctness release. Upgrading is strongly recommended, especially

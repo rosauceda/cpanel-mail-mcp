@@ -101,6 +101,16 @@ class AttachmentMeta(BaseModel):
     )
 
 
+class MimePartInfo(BaseModel):
+    """One node of the message's MIME tree, for diagnosing how files arrive."""
+    depth: int
+    type: str
+    disposition: str | None = None
+    filename: str | None = None
+    size: int | None = Field(default=None, description="Decoded bytes (leaf parts only).")
+    content_id: bool = False
+
+
 class ReadEmailResult(BaseModel):
     uid: str
     from_: str = Field(alias="from")
@@ -118,6 +128,12 @@ class ReadEmailResult(BaseModel):
     body_text: str
     body_html: str
     attachments: list[AttachmentMeta]
+    mime_parts: list[MimePartInfo] = Field(
+        default_factory=list,
+        description="The message's MIME tree (type, disposition, file name, size), "
+                    "to see why a file is or isn't listed as an attachment.",
+    )
+    size: int | None = Field(default=None, description="Raw message size in bytes.")
 
     model_config = {"populate_by_name": True}
 

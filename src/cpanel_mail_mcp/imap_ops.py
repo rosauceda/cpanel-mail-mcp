@@ -611,6 +611,22 @@ def _walk_parts(msg) -> tuple[str, str, list[dict]]:
     return body_text, body_html, attachments
 
 
+def _mime_parts(part, depth: int = 0) -> list[dict]:
+    """Flat MIME tree, outermost first: how each part arrived."""
+    leaf = not part.is_multipart() or part.get_content_type() in _MESSAGE_TYPES
+    node = {
+        "depth": depth,
+        "type": part.get_content_type(),
+        "disposition": part.get_content_disposition(),
+        "filename": _decode(part.get_filename()) or None,
+        "size": len(part_bytes(part)) if leaf else None,
+        "content_id": bool(part["Content-ID"]),
+    }
+    if leaf:
+        return [node]
+    return [node] + [n for sub in part.get_payload() for n in _mime_parts(sub, depth + 1)]
+
+
 def read_email(
     a: Account, uid: str, folder: str = "INBOX", include_attachments: bool = False
 ) -> dict:
@@ -642,6 +658,8 @@ def read_email(
         "body_text": body_text,
         "body_html": body_html,
         "attachments": out_atts,
+        "mime_parts": _mime_parts(msg),
+        "size": len(raw),
     }
 
 

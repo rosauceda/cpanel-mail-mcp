@@ -169,6 +169,10 @@ def test_unnamed_xml_and_pdf_get_generated_names(server):
     import base64
     atts = imap_ops.download_attachments(_acct(), "11", "INBOX", ["adjunto-3.pdf"])
     assert base64.b64decode(atts[0]["content_base64"]) == PDF
+    tree = [(p["depth"], p["type"], p["disposition"]) for p in full["mime_parts"]]
+    assert tree == [(0, "multipart/mixed", None), (1, "multipart/related", None), (2, "text/html", None),
+                    (2, "image/png", "inline"), (1, "text/xml", None), (1, "application/pdf", None)]
+    assert full["size"] > 0
 
 
 def test_forwarded_email_downloads_as_eml(server):
