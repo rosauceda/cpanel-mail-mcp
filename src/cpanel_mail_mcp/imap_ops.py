@@ -352,9 +352,10 @@ def _plist(x) -> dict[str, str]:
 
 def _bs_is_attachment(bs: list, top: bool) -> bool:
     """Same rule as `_walk_parts`: disposition attachment, a file name, a
-    forwarded message, or a bare non-text message — except images carrying a
-    Content-ID without `disposition: attachment`, which are embedded in the
-    HTML (signature logos), not files."""
+    forwarded message, a bare non-text message, or an unnamed file part
+    (`_is_unnamed_file`) — except images carrying a Content-ID without
+    `disposition: attachment`, which are embedded in the HTML (signature
+    logos), not files."""
     typ = str(bs[0] or "").lower()
     sub = str(bs[1] or "").lower() if len(bs) > 1 else ""
     if typ == "message" and sub in ("rfc822", "global"):
@@ -370,7 +371,7 @@ def _bs_is_attachment(bs: list, top: bool) -> bool:
         return True
     if named:
         return not (cid and typ == "image")
-    return top and typ != "text"
+    return (top and typ != "text") or _is_unnamed_file(f"{typ}/{sub}")
 
 
 def _bs_count(bs: list, top: bool = False) -> int:
@@ -527,6 +528,27 @@ def search(
 
 _MESSAGE_TYPES = ("message/rfc822", "message/global")
 
+# Extension for file parts that arrive without a name.
+_UNNAMED_EXT = {
+    "application/pdf": ".pdf",
+    "application/xml": ".xml",
+    "text/xml": ".xml",
+    "application/zip": ".zip",
+    "application/x-zip-compressed": ".zip",
+}
+
+
+def _is_unnamed_file(ctype: str) -> bool:
+    """A part that is a file even without a name or `disposition: attachment`.
+    The SAT's free-invoicing mails (servicioselectronicos@sat.gob.mx) send the
+    CFDI's XML and PDF this way."""
+    ctype = ctype.lower()
+    return ctype.startswith("application/") or ctype == "text/xml"
+
+
+def _unnamed_filename(ctype: str, n: int) -> str:
+    return f"adjunto-{n}{_UNNAMED_EXT.get(ctype.lower(), '.bin')}"
+
 
 def _leaf_parts(part):
     """Leaf MIME parts; an attached email (message/rfc822) counts as one leaf
@@ -554,7 +576,8 @@ def _walk_parts(msg) -> tuple[str, str, list[dict]]:
 
     A part is an attachment when it has `Content-Disposition: attachment`, a
     file name, or is an attached email; a single-part non-text message is one
-    too. Images embedded in the HTML by Content-ID are listed with
+    too, and so is an unnamed file part (`_is_unnamed_file`), which gets a
+    generated name like `adjunto-2.pdf`. Images embedded in the HTML by Content-ID are listed with
     `embedded=True` (image + Content-ID, not `disposition: attachment`) and
     don't count towards `has_attachments`. BODYSTRUCTURE
     detection (`_bs_is_attachment`) follows the same rule.
@@ -567,9 +590,12 @@ def _walk_parts(msg) -> tuple[str, str, list[dict]]:
         disp = part.get_content_disposition()
         fn = part.get_filename()
         is_message = ctype in _MESSAGE_TYPES
-        if disp == "attachment" or fn or is_message or (not multipart and part.get_content_maintype() != "text"):
+        if (disp == "attachment" or fn or is_message or (not multipart and part.get_content_maintype() != "text")
+                or (multipart and _is_unnamed_file(ctype))):
             if is_message and not fn:
                 fn = (_decode(part.get_payload()[0]["Subject"]) or "message") + ".eml"
+            elif not fn and multipart:
+                fn = _unnamed_filename(ctype, len(attachments) + 1)
             attachments.append({
                 "filename": _decode(fn) or "unnamed",
                 "mime": ctype,

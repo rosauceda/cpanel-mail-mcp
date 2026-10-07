@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **PDF and XML parts with no file name now count as attachments.** The SAT's
+  free-invoicing mails (servicioselectronicos@sat.gob.mx) send the CFDI's XML
+  and PDF with neither a name nor `Content-Disposition: attachment`, so those
+  mails were listed with `has_attachments: false` and their files were never
+  returned. Any unnamed `application/*` or `text/xml` part is now a file, both
+  in listings (BODYSTRUCTURE) and in `read_email` / `download_attachments`,
+  with a generated name such as `adjunto-2.pdf`.
+
 ## 0.7.1
 
 Safety and correctness release. Upgrading is strongly recommended, especially

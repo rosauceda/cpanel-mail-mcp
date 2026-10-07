@@ -102,9 +102,33 @@ def non_ascii_filename():
     return m, 1
 
 
+def sat_unnamed_xml_pdf():
+    """SAT "Factura electrónica" (servicioselectronicos@sat.gob.mx): HTML with
+    inline logos, then the XML and the PDF as parts with neither a file name
+    nor a Content-Disposition."""
+    from email.mime.application import MIMEApplication
+    from email.mime.image import MIMEImage
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    related = MIMEMultipart("related")
+    related.attach(MIMEText('<p>Se adjunta el archivo XML <img src="cid:logo1"></p>', "html"))
+    logo = MIMEImage(PNG, "png")
+    logo.add_header("Content-ID", "<logo1>")
+    logo.add_header("Content-Disposition", "inline", filename="logo1.png")
+    related.attach(logo)
+    m = MIMEMultipart("mixed")
+    m["From"], m["To"] = "servicioselectronicos@sat.gob.mx", "me@ex.com"
+    m["Subject"], m["Date"] = "Factura electrónica", "Thu, 24 Sep 2026 10:00:00 -0700"
+    m.attach(related)
+    m.attach(MIMEText('<?xml version="1.0"?><cfdi:Comprobante/>', "xml", "utf-8"))
+    m.attach(MIMEApplication(PDF, "pdf"))
+    return m, 2
+
+
 CASES = [plain, pdf_attached, two_files, signature_logo_only, logo_without_disposition,
          logo_plus_real_attachment, apple_inline_pdf, forwarded_as_attachment, bare_pdf,
-         non_ascii_filename]
+         non_ascii_filename, sat_unnamed_xml_pdf]
 
 
 @pytest.fixture
@@ -134,6 +158,17 @@ def test_embedded_logo_is_listed_but_not_counted(server):
     server.add("INBOX", msg.as_bytes(policy=email.policy.SMTP), uid=7)
     full = imap_ops.read_email(_acct(), "7", "INBOX")
     assert [(a["filename"], a["embedded"]) for a in full["attachments"]] == [("image001.png", True)]
+
+
+def test_unnamed_xml_and_pdf_get_generated_names(server):
+    msg, _ = sat_unnamed_xml_pdf()
+    server.add("INBOX", msg.as_bytes(), uid=11)
+    full = imap_ops.read_email(_acct(), "11", "INBOX")
+    files = [(a["filename"], a["mime"]) for a in full["attachments"] if not a["embedded"]]
+    assert files == [("adjunto-2.xml", "text/xml"), ("adjunto-3.pdf", "application/pdf")]
+    import base64
+    atts = imap_ops.download_attachments(_acct(), "11", "INBOX", ["adjunto-3.pdf"])
+    assert base64.b64decode(atts[0]["content_base64"]) == PDF
 
 
 def test_forwarded_email_downloads_as_eml(server):
