@@ -15,6 +15,14 @@
 - `read_email` returns `mime_parts` (the message's MIME tree: type,
   disposition, file name and size of each part) and the raw `size`, to see
   why a file is or isn't listed as an attachment.
+- `mcpb/`: source of the Claude Desktop extension ("Correo DMF") and
+  `mcpb/build.sh` to pack it. **Bundle 0.7.2** explains Windows blocks: when
+  Smart App Control, App Control for Business (WDAC), AppLocker or an
+  antivirus stops one of the unsigned native DLLs uv installs (e.g.
+  `_pydantic_core.pyd`), the extension log names the blocked file and the
+  steps to fix it, instead of asking the user to check their internet
+  connection. The log is now written as UTF-8 so Windows' own error text
+  keeps its accents.
 
 ## 0.7.1
 

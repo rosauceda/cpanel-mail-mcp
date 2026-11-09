@@ -2,7 +2,7 @@
   "manifest_version": "0.4",
   "name": "cpanel-mail-dmf",
   "display_name": "Correo DMF",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "Lee, busca, organiza y responde tu correo de De Mis Farmacias desde Claude.",
   "long_description": "Conecta Claude directamente a tu buzon de correo corporativo por IMAP/SMTP.\n\nPuedes pedirle que busque mensajes, resuma hilos, descargue adjuntos, redacte borradores, responda o reenvie correos, organice carpetas y envie invitaciones de calendario.\n\nEl servidor corre **localmente en tu computadora**. Tu contrasena se guarda en el llavero del sistema operativo y nunca se envia a ningun servidor que no sea el de correo de la empresa.\n\n**0.7.1:** usa identificadores permanentes (UID IMAP) para mover y borrar, asi que nunca actua sobre un correo distinto al indicado.",
   "author": {

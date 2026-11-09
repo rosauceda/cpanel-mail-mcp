@@ -1,6 +1,6 @@
 [project]
 name = "cpanel-mail-dmf"
-version = "0.7.1"
+version = "0.7.2"
 description = "MCPB bundle for cpanel-mail-mcp (UID-safe 0.7.1+, vendored in src/)"
 requires-python = ">=3.10"
 # El paquete cpanel_mail_mcp va incluido en src/cpanel_mail_mcp/ (build.sh lo
