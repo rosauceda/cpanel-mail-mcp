@@ -51,6 +51,12 @@ claude mcp add cpanel-mail \
   -- cpanel-mail-mcp
 ```
 
+### Claude Desktop extension (`.mcpb`)
+
+[`mcpb/`](mcpb/) holds the one-click Claude Desktop extension ("Correo DMF"):
+`./mcpb/build.sh` packs it into `dist/cpanel-mail-dmf-<version>.mcpb`. See
+[mcpb/README.md](mcpb/README.md).
+
 ### Development install (from a git checkout)
 
 ```bash
