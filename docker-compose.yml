@@ -1,0 +1,27 @@
+# Local run or Dokploy "Compose" deployment. On Dokploy you can instead create
+# an "Application" with build type Dockerfile — same env vars.
+#
+#   CPANEL_HOST=mail.tudominio.com docker compose up -d --build
+#   curl -s localhost:8080/health    # -> ok
+services:
+  cpanel-mail-mcp:
+    build: .
+    image: cpanel-mail-mcp:0.7.1
+    restart: unless-stopped
+    environment:
+      # Callers (n8n) send X-Email-User + X-Email-Password on every request.
+      MCP_AUTH_MODE: credentials
+      CPANEL_HOST: ${CPANEL_HOST:?set CPANEL_HOST, e.g. mail.tudominio.com}
+      # Only these address domains may log in (recommended).
+      MCP_ALLOWED_EMAIL_DOMAINS: ${MCP_ALLOWED_EMAIL_DOMAINS:-}
+      # Extra shared secret, sent as X-API-Key (recommended if exposed publicly).
+      MCP_API_KEY: ${MCP_API_KEY:-}
+      # IANA zone for send_invite times without an offset.
+      MCP_DEFAULT_TIMEZONE: ${MCP_DEFAULT_TIMEZONE:-}
+      # cPanel defaults; change if your server differs.
+      CPANEL_IMAP_PORT: ${CPANEL_IMAP_PORT:-993}
+      CPANEL_SMTP_PORT: ${CPANEL_SMTP_PORT:-465}
+      CPANEL_SENT_FOLDER: ${CPANEL_SENT_FOLDER:-INBOX.Sent}
+      CPANEL_DRAFTS_FOLDER: ${CPANEL_DRAFTS_FOLDER:-INBOX.Drafts}
+    ports:
+      - "8080:8080"   # drop this on Dokploy; Traefik / the internal network reach port 8080

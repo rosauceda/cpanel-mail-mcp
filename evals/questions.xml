@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Evaluation questions for cpanel-mail-mcp.
+  See fixture-notes.md for the mailbox state these answers assume.
+  All questions are read-only (no send/delete/move/flag operations).
+-->
+<evaluation>
+  <qa_pair>
+    <question>How many folders does the account have listed (root-level or nested)?</question>
+    <answer>13</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Which sender address in the INBOX has sent the most messages? Give just the email address.</question>
+    <answer>juan@dominio.com</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What is the subject line of the most recent unread message in the INBOX from the notifications@github.com address? Include the issue number.</question>
+    <answer>[rosauceda/cpanel-mail-mcp] Issue #43 opened</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>How many messages are in the INBOX.Archivo folder?</question>
+    <answer>3</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Search the INBOX for messages whose SUBJECT contains "Reunión". How many results are returned?</question>
+    <answer>2</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>The message from juan@dominio.com with subject "Contrato firmado (PDF adjunto)" has one attachment. What is its filename?</question>
+    <answer>contrato_v3.pdf</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>What is the MIME type of the attachment in the "Contrato firmado" email? Answer in the format type/subtype.</question>
+    <answer>application/pdf</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>How many messages are in the thread that starts with the "Reunión semanal — jueves 10am" email?</question>
+    <answer>2</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Search the INBOX for messages whose FROM contains "billing@stripe.com". How many results are returned?</question>
+    <answer>2</answer>
+  </qa_pair>
+  <qa_pair>
+    <question>Look at the "Presupuesto Q3 revisado" message from maria@dominio.com. Besides the primary recipient, who else received this message (single email address in the To field)?</question>
+    <answer>juan@dominio.com</answer>
+  </qa_pair>
+</evaluation>
