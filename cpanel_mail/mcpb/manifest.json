@@ -1,0 +1,190 @@
+{
+  "manifest_version": "0.4",
+  "name": "cpanel-mail-dmf",
+  "display_name": "Correo DMF",
+  "version": "0.7.2",
+  "description": "Lee, busca, organiza y responde tu correo de De Mis Farmacias desde Claude.",
+  "long_description": "Conecta Claude directamente a tu buzon de correo corporativo por IMAP/SMTP.\n\nPuedes pedirle que busque mensajes, resuma hilos, descargue adjuntos, redacte borradores, responda o reenvie correos, organice carpetas y envie invitaciones de calendario.\n\nEl servidor corre **localmente en tu computadora**. Tu contrasena se guarda en el llavero del sistema operativo y nunca se envia a ningun servidor que no sea el de correo de la empresa.\n\n**0.7.1:** usa identificadores permanentes (UID IMAP) para mover y borrar, asi que nunca actua sobre un correo distinto al indicado.",
+  "author": {
+    "name": "Rodrigo Sauceda"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/rosauceda/cpanel-mail-mcp"
+  },
+  "support": "https://github.com/rosauceda/cpanel-mail-mcp/issues",
+  "icon": "icon.png",
+  "license": "MIT",
+  "keywords": [
+    "email",
+    "imap",
+    "smtp",
+    "cpanel",
+    "correo"
+  ],
+  "server": {
+    "type": "uv",
+    "entry_point": "src/server.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${__dirname}",
+        "python",
+        "${__dirname}/src/server.py"
+      ],
+      "env": {
+        "CPANEL_USER": "${user_config.email}",
+        "CPANEL_PASS": "${user_config.password}",
+        "CPANEL_IMAP_HOST": "${user_config.mail_host}",
+        "CPANEL_SMTP_HOST": "${user_config.mail_host}",
+        "CPANEL_IMAP_PORT": "993",
+        "CPANEL_SMTP_PORT": "465",
+        "CPANEL_SENT_FOLDER": "INBOX.Sent",
+        "CPANEL_DRAFTS_FOLDER": "INBOX.Drafts",
+        "CPANEL_SAVE_TO_SENT": "true",
+        "CPANEL_ACCOUNT_NAME": "default",
+        "CPANEL_FROM_NAME": "${user_config.from_name}",
+        "EMAIL_SEND_CONFIRMATION_CODE": "${user_config.send_confirmation_code}",
+        "MCP_TRANSPORT": "stdio",
+        "MCP_MAX_ATTACHMENT_MB": "25",
+        "CPANEL_TRASH_FOLDER": "INBOX.Trash"
+      }
+    }
+  },
+  "compatibility": {
+    "claude_desktop": ">=0.12.0",
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ]
+  },
+  "user_config": {
+    "email": {
+      "type": "string",
+      "title": "Correo electronico",
+      "description": "Tu direccion completa, por ejemplo nombre@demisfarmacias.com",
+      "required": true
+    },
+    "password": {
+      "type": "string",
+      "title": "Contrasena del buzon",
+      "description": "La misma contrasena con la que entras a webmail. Se guarda cifrada en el llavero del sistema.",
+      "sensitive": true,
+      "required": true
+    },
+    "mail_host": {
+      "type": "string",
+      "title": "Servidor de correo",
+      "description": "Deja el valor por defecto salvo que TI te indique otro.",
+      "default": "mail.demisfarmacias.com",
+      "required": true
+    },
+    "from_name": {
+      "type": "string",
+      "title": "Nombre para mostrar (opcional)",
+      "description": "Como quieres que aparezca tu nombre en los correos que envies.",
+      "required": false
+    },
+    "send_confirmation_code": {
+      "type": "string",
+      "title": "Codigo de confirmacion de envio (opcional)",
+      "description": "Si lo llenas, Claude no podra enviar ningun correo sin ese codigo. Dejalo vacio para envio normal con la aprobacion de siempre.",
+      "sensitive": true,
+      "required": false
+    }
+  },
+  "tools_generated": false,
+  "tools": [
+    {
+      "name": "list_accounts",
+      "description": "Muestra la cuenta de correo configurada"
+    },
+    {
+      "name": "list_folders",
+      "description": "Lista las carpetas del buzon"
+    },
+    {
+      "name": "list_recent",
+      "description": "Lista los mensajes mas recientes de una carpeta"
+    },
+    {
+      "name": "search_emails",
+      "description": "Busca por remitente, destinatario, asunto o texto"
+    },
+    {
+      "name": "read_email",
+      "description": "Lee encabezados y cuerpo de un mensaje"
+    },
+    {
+      "name": "download_attachments",
+      "description": "Descarga los adjuntos de un mensaje"
+    },
+    {
+      "name": "get_thread",
+      "description": "Agrupa los mensajes de una conversacion"
+    },
+    {
+      "name": "send_email",
+      "description": "Envia un correo nuevo"
+    },
+    {
+      "name": "reply_email",
+      "description": "Responde a un mensaje conservando el hilo"
+    },
+    {
+      "name": "forward_email",
+      "description": "Reenvia un mensaje con sus adjuntos"
+    },
+    {
+      "name": "save_draft",
+      "description": "Guarda un borrador sin enviarlo"
+    },
+    {
+      "name": "send_invite",
+      "description": "Envia una invitacion de calendario"
+    },
+    {
+      "name": "mark_read",
+      "description": "Marca un mensaje como leido"
+    },
+    {
+      "name": "mark_unread",
+      "description": "Marca un mensaje como no leido"
+    },
+    {
+      "name": "star_email",
+      "description": "Marca un mensaje como destacado"
+    },
+    {
+      "name": "unstar_email",
+      "description": "Quita el destacado de un mensaje"
+    },
+    {
+      "name": "move_email",
+      "description": "Mueve un mensaje a otra carpeta"
+    },
+    {
+      "name": "copy_email",
+      "description": "Copia un mensaje a otra carpeta"
+    },
+    {
+      "name": "delete_email",
+      "description": "Manda un mensaje a la papelera"
+    },
+    {
+      "name": "create_folder",
+      "description": "Crea una carpeta nueva"
+    },
+    {
+      "name": "delete_folder",
+      "description": "Elimina una carpeta vacia"
+    },
+    {
+      "name": "rename_folder",
+      "description": "Renombra una carpeta"
+    }
+  ]
+}
